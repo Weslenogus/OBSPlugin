@@ -68,7 +68,12 @@ fi
 # Modules limités à ce que livetext utilise (+ CUDA) : compilation bien plus
 # courte qu'un OpenCV complet. cuBLAS/cuFFT/cuDNN/décodeurs vidéo inutiles ici.
 say "Compilation (longue : 20 à 60 min selon la machine)"
-MODULES="core,imgproc,imgcodecs,videoio,highgui,video,calib3d,features2d,flann,photo,python3"
+# OpenCV 5 a renommé des modules (features2d → features, calib3d éclaté en
+# geometry/calib…). CMake IGNORE SANS ERREUR un nom inconnu : on liste donc
+# les noms 4.x ET 5.x, sinon ORB / findHomography manqueraient en silence.
+MODULES="core,imgproc,imgcodecs,videoio,highgui,video,photo,flann,python3"
+MODULES="$MODULES,features2d,calib3d"          # noms OpenCV 4.x
+MODULES="$MODULES,features,geometry"           # noms OpenCV 5.x
 MODULES="$MODULES,cudev,cudaarithm,cudawarping,cudaimgproc,cudafilters"
 export CMAKE_ARGS="-DWITH_CUDA=ON -DCUDA_TOOLKIT_ROOT_DIR=$CUDA_HOME \
   -DCUDA_ARCH_BIN=$CUDA_ARCH -DCUDA_ARCH_PTX= \
@@ -82,7 +87,7 @@ export PATH="$CUDA_HOME/bin:$PATH"
 rm -rf wheelhouse
 "$PYTHON" -m pip wheel --no-deps -w wheelhouse "$SDIST" -v 2>&1 | tee build.log | \
   grep --line-buffered -E "^\s*\[[0-9]+/[0-9]+\]|^\s*\[ *[0-9]+%\]|NVIDIA CUDA:|CUDA_ARCH_BIN|error:|Error " || true
-WHEEL="$(ls wheelhouse/opencv_contrib_python*.whl 2>/dev/null | head -1)"
+WHEEL="$(ls wheelhouse/opencv_contrib_python*.whl 2>/dev/null | head -1 || true)"
 [ -n "$WHEEL" ] || die "Échec de compilation : voir $WORKDIR/build.log"
 
 # 4. Installation (remplace tout OpenCV pip existant) -----------------------
@@ -94,11 +99,24 @@ say "Installation de $WHEEL"
 # 5. Vérification ------------------------------------------------------------
 say "Vérification"
 "$PYTHON" - <<'PY'
+import sys
 import cv2
 info = cv2.getBuildInformation()
 cuda_line = next((l.strip() for l in info.splitlines() if l.strip().startswith("NVIDIA CUDA")), "?")
 print("OpenCV", cv2.__version__, "|", cuda_line)
-assert hasattr(cv2, "cuda") and hasattr(cv2.cuda, "warpPerspective"), "module cv2.cuda absent"
+# Toutes les fonctions OpenCV dont livetext a besoin (un module manquant
+# ne provoque aucune erreur de compilation : on le détecte ici).
+needed = ["ORB_create", "BFMatcher", "findHomography", "USAC_MAGSAC", "calcOpticalFlowPyrLK",
+          "goodFeaturesToTrack", "inpaint", "warpPerspective", "getPerspectiveTransform",
+          "adaptiveThreshold", "connectedComponentsWithStats", "blendLinear", "VideoCapture",
+          "VideoWriter", "imshow", "waitKeyEx"]
+missing = [n for n in needed if not hasattr(cv2, n)]
+cuda_needed = ["warpPerspective", "blendLinear", "addWeighted", "merge", "multiply", "add",
+               "createGaussianFilter", "getCudaEnabledDeviceCount"]
+missing += ["cuda." + n for n in cuda_needed if not hasattr(getattr(cv2, "cuda", None), n)]
+if missing:
+    sys.exit("Fonctions OpenCV manquantes : " + ", ".join(missing))
+print("Fonctions requises par livetext : toutes présentes")
 print("GPU CUDA visibles :", cv2.cuda.getCudaEnabledDeviceCount())
 PY
 echo "Terminé. Testez ensuite :  python -m livetext.accel"

@@ -65,7 +65,12 @@ if (-not (Test-Path $sdist)) {
 
 # 3. Compilation -------------------------------------------------------------
 Say "Compilation (longue : 30 à 90 min selon la machine)"
-$modules = "core,imgproc,imgcodecs,videoio,highgui,video,calib3d,features2d,flann,photo,python3," +
+# OpenCV 5 a renommé des modules (features2d -> features, calib3d éclaté en
+# geometry/calib...). CMake IGNORE SANS ERREUR un nom inconnu : on liste les
+# noms 4.x ET 5.x, sinon ORB / findHomography manqueraient en silence.
+$modules = "core,imgproc,imgcodecs,videoio,highgui,video,photo,flann,python3," +
+           "features2d,calib3d," +      # noms OpenCV 4.x
+           "features,geometry," +       # noms OpenCV 5.x
            "cudev,cudaarithm,cudawarping,cudaimgproc,cudafilters"
 $cudaRoot = $env:CUDA_PATH -replace '\\', '/'
 $env:CMAKE_ARGS = "-DWITH_CUDA=ON -DCUDA_TOOLKIT_ROOT_DIR=`"$cudaRoot`" " +
@@ -101,7 +106,17 @@ import cv2
 info = cv2.getBuildInformation()
 print("OpenCV", cv2.__version__, "|", next((l.strip() for l in info.splitlines()
       if l.strip().startswith("NVIDIA CUDA")), "?"))
-assert hasattr(cv2, "cuda") and hasattr(cv2.cuda, "warpPerspective"), "module cv2.cuda absent"
+needed = ["ORB_create", "BFMatcher", "findHomography", "USAC_MAGSAC", "calcOpticalFlowPyrLK",
+          "goodFeaturesToTrack", "inpaint", "warpPerspective", "getPerspectiveTransform",
+          "adaptiveThreshold", "connectedComponentsWithStats", "blendLinear", "VideoCapture",
+          "VideoWriter", "imshow", "waitKeyEx"]
+missing = [n for n in needed if not hasattr(cv2, n)]
+cuda_needed = ["warpPerspective", "blendLinear", "addWeighted", "merge", "multiply", "add",
+               "createGaussianFilter", "getCudaEnabledDeviceCount"]
+missing += ["cuda." + n for n in cuda_needed if not hasattr(getattr(cv2, "cuda", None), n)]
+if missing:
+    raise SystemExit("Fonctions OpenCV manquantes : " + ", ".join(missing))
+print("Fonctions requises par livetext : toutes présentes")
 print("GPU CUDA visibles :", cv2.cuda.getCudaEnabledDeviceCount())
 '@
 & $Python -c $check
