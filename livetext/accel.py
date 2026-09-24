@@ -177,7 +177,11 @@ class Accelerator:
         if mode == "off":
             return
         count = cuda_device_count()
-        if count == 0:
+        if count < 0:
+            # OpenCV renvoie -1 si le pilote NVIDIA est absent ou trop ancien
+            # pour la version de CUDA compilée (CUDA 13 : pilote ≥ 580).
+            self.reason = "pilote NVIDIA absent ou trop ancien pour ce CUDA (CUDA 13 : ≥ 580)"
+        elif count == 0:
             self.reason = "OpenCV sans CUDA ou aucun GPU"
         else:
             ok, detail = self.self_test()
@@ -277,8 +281,9 @@ def main() -> int:
                       if line.strip().startswith("NVIDIA CUDA")), "NVIDIA CUDA: NO")
     print(f"OpenCV {cv2.__version__} | {cuda_line}")
     count = cuda_device_count()
-    print(f"GPU CUDA visibles : {count}")
-    if count:
+    print(f"GPU CUDA visibles : {count}" + ("  (-1 = pilote NVIDIA absent ou trop ancien)"
+                                              if count < 0 else ""))
+    if count > 0:
         cv2.cuda.printShortCudaDeviceInfo(cv2.cuda.getDevice())
     accel = Accelerator("auto")
     print(f"Auto-test : {'GPU ACTIF' if accel.enabled else 'CPU'} ({accel.reason})")

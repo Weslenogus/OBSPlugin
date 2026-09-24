@@ -39,6 +39,13 @@ def test_auto_without_cuda_stays_on_cpu(monkeypatch):
     assert not a.enabled and "CUDA" in a.reason
 
 
+def test_outdated_driver_gives_an_actionable_reason(monkeypatch):
+    """-1 : OpenCV compilé avec CUDA mais pilote absent / trop ancien."""
+    fake_cuda.install(monkeypatch, devices=-1)
+    a = Accelerator("on")
+    assert not a.enabled and "pilote" in a.reason and "580" in a.reason
+
+
 def test_real_opencv_here_has_no_cuda():
     """Ce conteneur (pip opencv) n'a pas CUDA : repli CPU sans erreur."""
     a = Accelerator("auto")

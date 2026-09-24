@@ -7,8 +7,8 @@
 #   1. Pilote NVIDIA récent.
 #   2. Visual Studio 2022 Build Tools, charge de travail « Développement
 #      Desktop en C++ » (MSVC + SDK Windows).
-#   3. CUDA Toolkit 12.x (12.9 conseillé) installé APRÈS Visual Studio, pour
-#      que son intégration MSBuild soit ajoutée.
+#   3. CUDA Toolkit 13.4 (pilote ≥ 580 ; sinon 12.9) installé APRÈS Visual
+#      Studio, pour que son intégration MSBuild soit ajoutée.
 #   4. Python ≥ 3.10 (venv conseillé), CMake est installé automatiquement.
 #
 # Usage (depuis le dossier du projet, venv activé) :
@@ -29,7 +29,7 @@ function Die($m) { Write-Host "`nERREUR : $m" -ForegroundColor Red; exit 1 }
 
 # 1. Vérifications ----------------------------------------------------------
 Say "Vérifications"
-if (-not $env:CUDA_PATH) { Die "CUDA_PATH non défini : installez le CUDA Toolkit 12.x." }
+if (-not $env:CUDA_PATH) { Die "CUDA_PATH non défini : installez le CUDA Toolkit (13.4 conseillé)." }
 $nvcc = Join-Path $env:CUDA_PATH "bin\nvcc.exe"
 if (-not (Test-Path $nvcc)) { Die "nvcc introuvable : $nvcc" }
 & $nvcc --version | Select-Object -Last 1
@@ -64,7 +64,7 @@ if (-not (Test-Path $sdist)) {
 }
 
 # 3. Compilation -------------------------------------------------------------
-Say "Compilation (longue : 30 à 90 min selon la machine)"
+Say "Compilation (15 à 45 min selon la machine)"
 # OpenCV 5 a renommé des modules (features2d -> features, calib3d éclaté en
 # geometry/calib...). CMake IGNORE SANS ERREUR un nom inconnu : on liste les
 # noms 4.x ET 5.x, sinon ORB / findHomography manqueraient en silence.

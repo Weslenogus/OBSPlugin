@@ -4,8 +4,9 @@
 # sous forme d'une vraie « wheel » pip installée dans l'environnement Python
 # courant (venv conseillé). Linux x86_64.
 #
-# Prérequis : pilote NVIDIA, CUDA Toolkit 12.x (nvcc + NPP), gcc/g++, Python ≥ 3.10.
-#   Ubuntu 24.04 : sudo apt install cuda-nvcc-12-9 cuda-cudart-dev-12-9 libnpp-dev-12-9
+# Prérequis : pilote NVIDIA, CUDA Toolkit (nvcc + NPP), gcc/g++, Python ≥ 3.10.
+#   Validé : OpenCV 5.0.0.93 + CUDA 13.4 (pilote ≥ 580) ; CUDA 12.9 si pilote plus ancien.
+#   Ubuntu 24.04 : sudo apt install cuda-nvcc-13-4 cuda-cudart-dev-13-4 libnpp-dev-13-4
 #                  (dépôt NVIDIA), + libgtk-3-dev pour la fenêtre d'aperçu.
 #
 # Usage : scripts/build_opencv_cuda.sh
@@ -67,7 +68,7 @@ fi
 # 3. Compilation -------------------------------------------------------------
 # Modules limités à ce que livetext utilise (+ CUDA) : compilation bien plus
 # courte qu'un OpenCV complet. cuBLAS/cuFFT/cuDNN/décodeurs vidéo inutiles ici.
-say "Compilation (longue : 20 à 60 min selon la machine)"
+say "Compilation (~15 min sur 4 cœurs, davantage par architecture GPU ajoutée)"
 # OpenCV 5 a renommé des modules (features2d → features, calib3d éclaté en
 # geometry/calib…). CMake IGNORE SANS ERREUR un nom inconnu : on liste donc
 # les noms 4.x ET 5.x, sinon ORB / findHomography manqueraient en silence.

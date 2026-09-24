@@ -45,6 +45,7 @@ caméra virtuelle (« OBS Virtual Camera » ou « livetext » sous Linux).
 
 **Route retenue : recompiler OpenCV avec CUDA**, à partir des sources
 officielles `opencv-contrib-python` de PyPI, en une vraie *wheel* pip.
+**Versions : les plus récentes**, OpenCV **5.0.0.93** et CUDA **13.4**.
 
 | Option | Verdict |
 |---|---|
@@ -66,17 +67,18 @@ un **auto-test** (chaîne GPU comparée à la chaîne CPU), et toute erreur en
 direct fait recalculer l'image sur CPU puis désactive le GPU, sans couper le
 flux.
 
-**Compilation** (20 à 90 min ; le script choisit l'architecture de votre GPU
-avec `nvidia-smi`, installe la wheel et la vérifie) :
+**Compilation** (~15 min sur 4 cœurs ici ; le script détecte l'architecture
+de votre GPU avec `nvidia-smi`, installe la wheel et vérifie toutes les
+fonctions OpenCV dont `livetext` a besoin) :
 
 ```bash
-# Linux — CUDA 12.9 (dépôt NVIDIA) : cuda-nvcc-12-9 cuda-cudart-dev-12-9 libnpp-dev-12-9
+# Linux — CUDA 13.4 (dépôt NVIDIA) : cuda-nvcc-13-4 cuda-cudart-dev-13-4 libnpp-dev-13-4
 #          + libgtk-3-dev pour la fenêtre d'aperçu
-scripts/build_opencv_cuda.sh
+CUDA_HOME=/usr/local/cuda-13.4 scripts/build_opencv_cuda.sh
 ```
 
 ```powershell
-# Windows — Visual Studio 2022 Build Tools (C++), puis CUDA Toolkit 12.9 (après VS)
+# Windows — Visual Studio 2022 Build Tools (C++), puis CUDA Toolkit 13.4 (après VS)
 powershell -ExecutionPolicy Bypass -File scripts\build_opencv_cuda.ps1
 ```
 
@@ -88,19 +90,34 @@ python -m livetext.accel
 ```
 
 Remarques :
-- **CUDA 12.x plutôt que 13.x** : 12.x fonctionne avec tout pilote ≥ 525,
-  13.x exige un pilote ≥ 580. La 12.8 et suivantes gèrent les RTX 20 à 50.
+- **Pilote NVIDIA ≥ 580 exigé par CUDA 13.x.** Vérifiez avec `nvidia-smi`
+  (ligne « Driver Version »). CUDA 13.4 couvre toutes les RTX (20 à 50) ;
+  seules les cartes antérieures (GTX 10…) en sont exclues. Pilote plus
+  ancien et impossible à mettre à jour : utilisez **CUDA 12.9**
+  (pilote ≥ 525), avec le même script.
+- Si le pilote est absent ou trop ancien, `python -m livetext.accel` affiche
+  `GPU CUDA visibles : -1`. `livetext` n'appelle alors **aucune** fonction
+  GPU : dans cet état, certains appels `cv2.cuda` feraient avorter tout le
+  processus au lieu de lever une erreur (constaté sur le build).
 - **Windows** : les DLL CUDA sont déclarées automatiquement
   (`os.add_dll_directory`) ; sans cela, `import cv2` échouerait avec « DLL
   load failed ».
-- **Ce qui a été vérifié** : la chaîne GPU est testée contre un `cv2.cuda`
-  simulé et strict (mêmes contraintes que le vrai), et la configuration CMake
-  du script Linux détecte bien CUDA (OpenCV 5.0.0 + CUDA 12.9, conteneur sans
-  GPU : compiler n'exige que `nvcc`). Le script Windows suit la même recette
-  mais n'a pas pu être exécuté. L'exécution sur un vrai GPU n'a pas pu être
-  testée : lancez `python -m livetext.accel`.
-- Les indications de typage (`.pyi`) d'OpenCV ne sont pas générées avec ce jeu
-  réduit de modules : aucun effet à l'exécution.
+- **OpenCV 5 a renommé des modules** (`features2d` → `features`, `calib3d`
+  éclaté). CMake ignore sans erreur un nom de module inconnu : un OpenCV sans
+  ORB ni `findHomography` compilerait sans broncher. Les scripts listent les
+  noms 4.x et 5.x, et leur vérification finale contrôle chaque fonction
+  utilisée ; `tests/test_build_scripts.py` fige cette liste.
+
+**Ce qui a été vérifié, et ce qui ne l'a pas été :**
+
+| | |
+|---|---|
+| ✅ Script Linux exécuté de bout en bout | OpenCV 5.0.0.93 + **CUDA 13.4** : compilation, wheel (34 Mo), installation, vérification des fonctions (conteneur sans GPU : compiler n'exige que `nvcc`) |
+| ✅ **Tous les tests (157) sur ce build CUDA** | `livetext` fonctionne avec l'OpenCV exact que produit le script |
+| ✅ OpenCV 5.0 + CUDA 12.9 | compilation complète (833 étapes) |
+| ✅ Signatures `cv2.cuda` | contrôlées sur les fichiers `.pyi` générés par ce build (a révélé le piège de `cv2.cuda.merge`, corrigé) |
+| ❌ Exécution sur un vrai GPU | impossible ici : lancez `python -m livetext.accel`, qui l'auto-teste et compare CPU et GPU |
+| ❌ Script Windows | même recette, non exécuté |
 
 ## Police
 
@@ -288,12 +305,14 @@ pip install pytest
 python -m pytest
 ```
 
-143 tests, sans caméra, GPU ni OBS (scène synthétique ; le chemin GPU est
-testé avec un `cv2.cuda` simulé) : géométrie, police locale, interlettrage et
-graisse, teinte de l'encre, black point matching, bruit ISO calibré, fusion
-Produit, effacement (Telea et Navier-Stokes), précision du suivi,
-anti-tremblement (One Euro et EMA), décalage au demi-pixel, raccourcis,
-repli GPU → CPU, application de bout en bout.
+157 tests, sans caméra, GPU ni OBS (scène synthétique ; le chemin GPU est
+testé avec un `cv2.cuda` simulé et strict, fidèle aux signatures réelles) :
+géométrie, police locale, interlettrage et graisse, teinte de l'encre, black
+point matching, bruit ISO calibré, fusion Produit, effacement (Telea et
+Navier-Stokes), précision du suivi, anti-tremblement (One Euro et EMA),
+décalage au demi-pixel, raccourcis, chaîne GPU = chaîne CPU, envoi unique de
+l'image, repli GPU → CPU, scripts de compilation, application de bout en
+bout. Ils passent aussi sur l'OpenCV 5.0 + CUDA 13.4 compilé par le script.
 
 ## Limites et conseils
 
