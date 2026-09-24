@@ -142,3 +142,31 @@ def test_cli_rejects_unavailable_outputs():
     code = main(["--source", "synthetic", "--output", "file:/nonexistent/dir/x.avi",
                  "--no-stdin", "--max-frames", "1"])
     assert code == 1
+
+
+def test_live_layout_commands_through_the_app():
+    app, _ = _app()
+    app.step(app._read())
+    auto = app.pipeline.renderer.last_size
+    for line in ("/tracking 2", "/weight 0.75", "/nudge 1 0"):
+        app.controller.handle_line(line)
+    app.controller.push(app.controller.handle_key(ord("+")))
+    app.step(app._read())
+    t = app.config.text
+    assert (t.tracking, t.weight, t.font_size) == (2.0, 0.75, auto + 1)
+    assert app.pipeline.text_offset[0] > 0
+    app.controller.push(app.controller.handle_key(ord("0")))
+    app.step(app._read())
+    assert not app.pipeline.text_offset.any()
+
+
+def test_cli_font_settings_default_to_the_globals():
+    from livetext import config as globals_
+    cfg = config_from_args(build_parser().parse_args(["--output", "none"]))
+    assert (cfg.text.font_size, cfg.text.tracking, cfg.text.weight) == (
+        globals_.FONT_SIZE_PT, globals_.TRACKING, globals_.WEIGHT)
+    cfg = config_from_args(build_parser().parse_args(
+        ["--output", "none", "--font-size", "30", "--tracking", "-0.5", "--weight", "1",
+         "--no-ink-sampling"]))
+    assert (cfg.text.font_size, cfg.text.tracking, cfg.text.weight) == (30, -0.5, 1.0)
+    assert not cfg.photometry.sample_ink

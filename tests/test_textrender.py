@@ -1,8 +1,18 @@
 import numpy as np
 import pytest
 
-from livetext.config import TextConfig
-from livetext.textrender import TextRenderer, load_font, normalize_text, wrap_text
+import shutil
+
+from livetext import textrender
+from livetext.config import FONT_FILE, TextConfig
+from livetext.textrender import (
+    TextRenderer,
+    find_system_font,
+    line_width,
+    load_font,
+    normalize_text,
+    wrap_text,
+)
 
 
 def test_normalize_text_interprets_escaped_newlines():
@@ -56,3 +66,53 @@ def test_center_alignment_centers_ink():
 
 def test_empty_text_renders_nothing():
     assert not TextRenderer(TextConfig()).render("   ", 100, 80).any()
+
+
+def test_local_police_ttf_is_used_by_default(tmp_path, monkeypatch):
+    """« police.ttf » dans le dossier courant l'emporte sur la police système."""
+    local = tmp_path / FONT_FILE
+    shutil.copy(find_system_font(), local)
+    monkeypatch.chdir(tmp_path)
+    assert textrender.local_font_path() == str(local)
+    assert TextRenderer(TextConfig()).font_path == str(local)
+
+
+def test_explicit_font_overrides_police_ttf(tmp_path, monkeypatch):
+    shutil.copy(find_system_font(), tmp_path / FONT_FILE)
+    monkeypatch.chdir(tmp_path)
+    other = str(tmp_path / "autre.ttf")
+    shutil.copy(find_system_font(), other)
+    assert TextRenderer(TextConfig(font_path=other)).font_path == other
+
+
+def _ink_extent(cov):
+    xs = np.nonzero(cov.max(axis=0) > 0.05)[0]
+    return xs.max() - xs.min()
+
+
+def test_tracking_spaces_letters_without_changing_glyphs():
+    base = TextRenderer(TextConfig(auto_fit=False)).render("AVATAR", 600, 200)
+    wide = TextRenderer(TextConfig(auto_fit=False, tracking=6.0)).render("AVATAR", 600, 200)
+    assert _ink_extent(wide) == pytest.approx(_ink_extent(base) + 5 * 6.0, abs=3)
+    assert wide.sum() == pytest.approx(base.sum(), rel=0.02)  # mêmes glyphes
+
+
+def test_tracking_is_counted_when_wrapping():
+    font = load_font(None, 32)
+    assert line_width(font, "abcd", 5.0) == pytest.approx(font.getlength("abcd") + 15.0)
+    lines = wrap_text("mot mot mot mot mot mot", font, 200, tracking=8.0)
+    assert all(line_width(font, line, 8.0) <= 200 for line in lines)
+
+
+@pytest.mark.parametrize("weight", [-0.75, 0.5, 1.5])
+def test_weight_thickens_or_thins_strokes(weight):
+    base = TextRenderer(TextConfig(auto_fit=False)).render("Graisse", 600, 200).sum()
+    other = TextRenderer(TextConfig(auto_fit=False, weight=weight)).render("Graisse", 600,
+                                                                            200).sum()
+    assert (other > base * 1.05) if weight > 0 else (other < base * 0.95)
+
+
+def test_last_size_reports_the_size_actually_used():
+    r = TextRenderer(TextConfig(font_size=40, auto_fit=False))
+    r.render("Taille", 600, 200)
+    assert r.last_size == 40

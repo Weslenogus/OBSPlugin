@@ -10,7 +10,6 @@ import time
 import cv2
 import numpy as np
 
-from .compositor import NoiseBank
 from .geometry import Quad
 
 log = logging.getLogger(__name__)
@@ -173,7 +172,10 @@ class SyntheticSource(FrameSource):
             p = (int(rng.integers(0, width)), int(rng.integers(0, height)))
             cv2.circle(self._desk, p, int(rng.integers(4, 30 * s + 5)), c, -1, cv2.LINE_AA)
 
-        self._noise = NoiseBank(seed)
+        self._paper_mask = np.full((self._ph, self._pw), 255, np.uint8)
+        self._noise = np.empty((height, width, 3), np.float32)
+        self._seed = seed
+        self._frame = 0   # compteur d'images (bruit), distinct du temps de pose _t
         self._xs = np.linspace(0, 1, width, dtype=np.float32)
         self._t = 0
         self.true_quad: Quad | None = None
@@ -201,18 +203,29 @@ class SyntheticSource(FrameSource):
         src = np.array([[0, 0], [self._pw - 1, 0], [self._pw - 1, self._ph - 1],
                         [0, self._ph - 1]], np.float32)
         H = cv2.getPerspectiveTransform(src, quad)
-        # BORDER_TRANSPARENT : la feuille est posée directement sur le bureau.
-        frame = self._desk.copy()
-        cv2.warpPerspective(self._paper, H, (w, h), dst=frame,
-                            borderMode=cv2.BORDER_TRANSPARENT)
+        # Composition par masque alpha déformé : bords de feuille anticrénelés,
+        # comme une vraie caméra (la détection sous-pixel en dépend).
+        paper = cv2.warpPerspective(self._paper, H, (w, h))
+        alpha = cv2.warpPerspective(self._paper_mask, H, (w, h)).astype(np.float32) / 255.0
+        frame = cv2.blendLinear(paper, self._desk, alpha, 1.0 - alpha)
 
-        # Éclairage : ombre douce qui balaie la scène, puis bruit du capteur.
+        # Éclairage : ombre douce qui balaie la scène (ne varie qu'en x).
         light = 0.85 + 0.15 * np.cos(2 * math.pi * (self._xs - 0.1 * math.sin(self._t / 45)))
         out = frame.astype(np.float32)
-        out *= light[None, :, None]  # l'éclairage ne varie qu'en x : diffusion
-        out += (self._noise.sample(h, w) * 2.0)[..., None]
+        out *= light[None, :, None]
+        # Bruit capteur *indépendant* à chaque image et par canal. Ne pas tirer
+        # des fenêtres d'une texture fixe : d'une image à l'autre ce serait un
+        # motif rigide translaté, que le flux optique suit et qui fausse le
+        # suivi (erreur moyenne ×3 mesurée). Écart-type par canal : un scalaire
+        # seul ne bruiterait que le premier canal.
+        # Graine dérivée de (seed, t) : image reproductible quel que soit le
+        # reste du programme (le générateur d'OpenCV est global).
+        cv2.setRNGSeed(self._seed * 1_000_003 + self._frame)
+        cv2.randn(self._noise, (0.0, 0.0, 0.0), (2.0, 2.0, 2.0))
+        out += self._noise
         self.true_quad = quad
         self._t += 1
+        self._frame += 1
         return np.clip(out, 0, 255, out=out).astype(np.uint8)
 
 

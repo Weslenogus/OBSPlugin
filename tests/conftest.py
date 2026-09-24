@@ -15,7 +15,7 @@ PAPER_BGR = (225, 232, 238)
 
 
 def make_scene(width: int = 960, height: int = 540, quad=None, seed: int = 0,
-               with_text: bool = True):
+               with_text: bool = True, ink=(30, 30, 30)):
     """Feuille (avec texte d'origine) déformée en perspective sur un fond sombre.
 
     Renvoie ``(image, quad_exact, masque_feuille)``.
@@ -28,9 +28,9 @@ def make_scene(width: int = 960, height: int = 540, quad=None, seed: int = 0,
     paper = np.clip(paper, 0, 255).astype(np.uint8)
     if with_text:
         cv2.putText(paper, "ORIGINAL", (50, 150), cv2.FONT_HERSHEY_SIMPLEX, 2.4,
-                    (30, 30, 30), 7, cv2.LINE_AA)
+                    ink, 7, cv2.LINE_AA)
         cv2.putText(paper, "line two 42", (50, 290), cv2.FONT_HERSHEY_SIMPLEX, 1.6,
-                    (40, 40, 40), 4, cv2.LINE_AA)
+                    ink, 4, cv2.LINE_AA)
     bg = cv2.GaussianBlur(rng.normal(70, 20, (height, width, 3)).astype(np.float32), (0, 0), 2)
     bg = np.clip(bg, 0, 255).astype(np.uint8)
     if quad is None:

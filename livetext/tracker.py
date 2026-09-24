@@ -22,12 +22,11 @@ pixels de l'image d'origine.
 
 from __future__ import annotations
 
-import math
-
 import cv2
 import numpy as np
 
 from .config import TrackerConfig
+from .filters import OneEuroFilter
 from .geometry import (
     Quad,
     canvas_corners,
@@ -231,8 +230,11 @@ def detect_document_quad(frame_bgr: np.ndarray,
 class PlanarTracker:
     """Suit un plan (la feuille) et renvoie ses 4 coins à chaque image."""
 
-    def __init__(self, config: TrackerConfig | None = None):
+    def __init__(self, config: TrackerConfig | None = None, fps: float = 30.0):
         self.config = config or TrackerConfig()
+        cfg = self.config
+        self._filter = OneEuroFilter(fps, cfg.smooth_min_cutoff, cfg.smooth_beta,
+                                     cfg.smooth_d_cutoff)
         self._orb = cv2.ORB_create(nfeatures=self.config.orb_features)
         self._matcher = cv2.BFMatcher(cv2.NORM_HAMMING)
         self.reset()
@@ -248,7 +250,9 @@ class PlanarTracker:
         self._prev_gray: np.ndarray | None = None
         self._ref_pts = np.empty((0, 2), np.float32)  # coords référence
         self._cur_pts = np.empty((0, 2), np.float32)  # coords courantes
-        self._quad: Quad | None = None           # lissé, échelle de suivi
+        self._raw: Quad | None = None            # brut : sert au suivi lui-même
+        self._quad: Quad | None = None           # lissé : sortie affichée
+        self._filter.reset()
         self._T: np.ndarray | None = None        # gabarit -> référence
         self._template: np.ndarray | None = None
         self._frame_index = 0
@@ -299,7 +303,8 @@ class PlanarTracker:
             gray, self._T, (tw, th), flags=cv2.INTER_LINEAR | cv2.WARP_INVERSE_MAP))
 
         self._prev_gray = gray
-        self._quad = ref_quad.copy()
+        self._raw = ref_quad.copy()
+        self._quad = self._filter(ref_quad)
         self._seed_points(gray, ref_quad, np.eye(3))
         self.alignment = 1.0
         self.status = "suivi"
@@ -394,12 +399,12 @@ class PlanarTracker:
         candidates = [q * self._scale for q in find_document_quads(frame_bgr)]
         if not candidates:
             return None
-        if self._quad is None or self.lost_frames > 0:
+        if self._raw is None or self.lost_frames > 0:
             return candidates[0]
-        dists = [float(np.linalg.norm(q - self._quad, axis=1).max()) for q in candidates]
+        dists = [float(np.linalg.norm(q - self._raw, axis=1).max()) for q in candidates]
         best = int(np.argmin(dists))
         # Une feuille ne se déplace pas d'un quart de sa taille en 1/30 s.
-        diag = float(np.linalg.norm(self._quad[2] - self._quad[0]))
+        diag = float(np.linalg.norm(self._raw[2] - self._raw[0]))
         return candidates[best] if dists[best] < 0.25 * diag else None
 
     def _plausible(self, quad: Quad, gray_shape: tuple[int, ...]) -> bool:
@@ -451,7 +456,7 @@ class PlanarTracker:
         if mode == "contour":
             new_quad = self._track_contour(frame_bgr)
         else:
-            search = self._quad if self.lost_frames == 0 else None
+            search = self._raw if self.lost_frames == 0 else None
             if mode == "orb":
                 H = self._track_orb(gray, search)
                 if H is not None:
@@ -477,17 +482,15 @@ class PlanarTracker:
         ):
             self._seed_points(gray, new_quad, H)
 
-        self._quad = self._smooth(new_quad)
+        if self.lost_frames > 0:
+            # Discontinuité (relocalisation) : ne pas faire « glisser » le texte
+            # depuis l'ancienne position, on repart de la nouvelle.
+            self._filter.reset()
+        # Lissage de la *sortie* seulement : le suivi garde l'estimation brute,
+        # le filtre ne peut donc pas le biaiser.
+        self._raw = new_quad
+        self._quad = self._filter(new_quad)
         self.lost_frames = 0
         self.status = ("suivi (contour)" if mode == "contour" else
                        f"suivi ({len(self._cur_pts)} pts, corr {self.alignment:.2f})")
         return self._quad / self._scale
-
-    def _smooth(self, quad: Quad) -> Quad:
-        """Lissage exponentiel adaptatif : fort à l'arrêt, nul en mouvement."""
-        alpha = self.config.smoothing
-        if self._quad is None or alpha <= 0 or self.lost_frames > 0:
-            return quad
-        motion = float(np.linalg.norm(quad - self._quad, axis=1).mean())
-        alpha_eff = alpha * math.exp(-motion / 3.0)
-        return (alpha_eff * self._quad + (1.0 - alpha_eff) * quad).astype(np.float32)

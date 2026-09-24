@@ -40,8 +40,10 @@ def _track(mode, frames=90, size=(960, 540)):
     return np.array(errors)
 
 
-@pytest.mark.parametrize("mode,mean_tol", [("hybrid", 3.0), ("flow", 3.0),
-                                           ("orb", 4.0), ("contour", 3.0)])
+# Tolérances serrées exprès : des bornes lâches (3 px) avaient laissé passer
+# une régression de la scène de test (bruit « rigide » qui trompait LK, ×4).
+@pytest.mark.parametrize("mode,mean_tol", [("hybrid", 1.5), ("flow", 1.5),
+                                           ("orb", 2.5), ("contour", 1.5)])
 def test_tracker_follows_moving_rotating_sheet(mode, mean_tol):
     errors = _track(mode)
     assert np.isfinite(errors).all(), "suivi perdu"
@@ -53,7 +55,7 @@ def test_orb_does_not_override_healthy_optical_flow():
     précis (~1,5 px) par sa propre estimation, fausse de ~11 px. C'est
     désormais le score d'alignement ZNCC qui arbitre."""
     errors = _track("hybrid", frames=200)
-    assert errors.max() < 6.0
+    assert errors.max() < 2.5
 
 
 def test_alignment_score_discriminates_misalignment():
@@ -104,3 +106,42 @@ def test_contour_mode_on_textless_sheet():
     tracker = PlanarTracker(TrackerConfig(mode="contour"))
     tracker.initialize(frame, detect_document_quad(frame))
     assert _corner_error(tracker.update(frame), quad) < 1.5
+
+
+class _StaticSheet(SyntheticSource):
+    """Feuille immobile : seul le bruit du capteur change d'une image à l'autre."""
+
+    def read(self):
+        self._t = 0
+        return super().read()
+
+
+def _rest_jitter(**tracker_cfg):
+    src = _StaticSheet(960, 540, seed=3)
+    first = src.read()
+    tracker = PlanarTracker(TrackerConfig(**tracker_cfg))
+    tracker.initialize(first, detect_document_quad(first))
+    quads = np.array([tracker.update(src.read()) for _ in range(80)])[10:]
+    return float(np.linalg.norm(np.diff(quads, axis=0), axis=2).mean())
+
+
+def test_smoothing_removes_jitter_at_rest():
+    """Anti-scintillement : le texte ne doit pas trembler sur une feuille immobile."""
+    raw = _rest_jitter(smooth_min_cutoff=0.0)
+    smoothed = _rest_jitter()
+    assert smoothed < 0.35 * raw
+
+
+def test_smoothing_filter_resets_after_relocalization():
+    """Après une perte de suivi, pas de « glissement » depuis l'ancienne position."""
+    src = SyntheticSource(960, 540, seed=3)
+    first = src.read()
+    tracker = PlanarTracker()
+    tracker.initialize(first, detect_document_quad(first))
+    tracker.update(src.read())
+    tracker.update(np.zeros_like(first))  # perdu
+    for _ in range(10):
+        src.read()  # la feuille a beaucoup bougé entre-temps
+    quad = tracker.update(src.read())
+    assert quad is not None
+    assert _corner_error(quad, src.true_quad) < 8.0

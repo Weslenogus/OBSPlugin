@@ -4,6 +4,19 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+# ---------------------------------------------------------------------------
+# Réglages de police : variables globales, à ajuster ici directement.
+# (1 point = 1 pixel du canevas rectifié, soit ~1 pixel à l'écran.)
+# ---------------------------------------------------------------------------
+FONT_FILE = "police.ttf"  # police vectorielle locale, dans le dossier du script
+FONT_SIZE_PT = 0          # taille en points ; 0 = automatique d'après la feuille
+TRACKING = 0.0            # interlettrage en points (négatif = lettres resserrées)
+WEIGHT = 0.0              # graisse en points : > 0 plus gras, < 0 plus maigre
+
+# Pas des réglages fins au clavier (fenêtre d'aperçu).
+NUDGE_STEP_PX = 0.5       # flèches : décalage du texte, en pixels écran
+FONT_STEP_PT = 1          # + / - : taille de police, en points
+
 # Résolutions supportées par le cahier des charges.
 RESOLUTIONS: dict[str, tuple[int, int]] = {
     "1080p": (1920, 1080),
@@ -34,7 +47,13 @@ class TrackerConfig:
     # LK est plus précis qu'ORB tant qu'il n'a pas décroché.
     orb_margin: float = 0.03
     ransac_threshold: float = 3.0
-    smoothing: float = 0.5          # lissage exponentiel des coins (0 = aucun)
+    # Anti-tremblement : filtre passe-bas adaptatif « One Euro » sur les 4
+    # coins de l'homographie (voir filters.py). Mesuré : tremblement à l'arrêt
+    # divisé par ~12 (et par 3 à 10 pour une webcam bruitée), retard < 0,7 px
+    # au démarrage d'un mouvement (1 à 15 px/image).
+    smooth_min_cutoff: float = 0.5  # Hz à l'arrêt ; plus bas = plus lisse (0 = off)
+    smooth_beta: float = 0.5        # hausse de la coupure avec la vitesse
+    smooth_d_cutoff: float = 4.0    # Hz, lissage de la vitesse estimée
 
 
 @dataclass
@@ -66,10 +85,12 @@ class TextConfig:
     """Paramètres du rendu du nouveau texte."""
 
     initial_text: str = "Bonjour OBS !"
-    font_path: str | None = None    # .ttf fourni ; None = police système
-    # Taille relative à la hauteur du canevas (0.12 = 12 %) si font_size == 0.
-    font_size: int = 0
+    # None = FONT_FILE (« police.ttf ») s'il existe, sinon une police système.
+    font_path: str | None = None
+    font_size: int = FONT_SIZE_PT   # points ; 0 = relative_font_size × hauteur
     relative_font_size: float = 0.12
+    tracking: float = TRACKING      # interlettrage (points)
+    weight: float = WEIGHT          # graisse (points)
     # Boîte de texte dans le canevas (coordonnées normalisées x0, y0, x1, y1).
     box: tuple[float, float, float, float] = (0.08, 0.08, 0.92, 0.92)
     align: str = "left"             # left | center | right
@@ -82,7 +103,10 @@ class TextConfig:
 class PhotometryConfig:
     """Paramètres d'intégration photométrique."""
 
-    # Rapport luminance encre / luminance papier (fusion Produit).
+    # Couleur de l'encre échantillonnée sur le texte imprimé d'origine autour
+    # de la zone (teinte exacte, jamais un noir pur). Si aucune encre n'est
+    # visible (feuille vierge), repli sur un gris : L_papier × ink_ratio.
+    sample_ink: bool = True
     ink_ratio: float = 0.22
     ink_min: float = 18.0           # luminance minimale de l'encre (0-255)
     ink_tint: tuple[float, float, float] = (1.0, 1.0, 1.0)  # teinte BGR

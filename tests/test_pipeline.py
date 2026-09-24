@@ -5,6 +5,8 @@ import pytest
 from livetext.config import AppConfig
 from livetext.pipeline import TextReplacementPipeline
 
+from conftest import make_scene
+
 
 def _pipeline(text="Nouveau", **erase):
     cfg = AppConfig()
@@ -72,3 +74,74 @@ def test_sheet_partially_out_of_frame(scene):
     pipe.set_target(quad)
     out = pipe.process(frame, shifted)
     assert out.shape == frame.shape
+
+
+# -- Couleur de l'encre réelle et décalage sous-pixel --------------------------
+
+BLUE_INK = (150, 60, 40)  # BGR : stylo bille bleu
+
+
+def _new_text_pixels(out, mask, threshold=150):
+    inner = cv2.erode(mask, np.ones((7, 7), np.uint8)) > 0
+    return out[(out.max(axis=2) < threshold) & inner]
+
+
+def test_new_text_takes_the_tint_of_the_printed_ink():
+    """Réalisme 1:1 : pas de noir ni de gris neutre, la teinte de l'encre réelle."""
+    frame, quad, mask = make_scene(ink=BLUE_INK)
+    pipe = _pipeline("Nouveau texte")
+    pipe.set_target(quad)
+    for _ in range(3):
+        out = pipe.process(frame, quad)
+    np.testing.assert_allclose(pipe.debug.ink_bgr, BLUE_INK, atol=6)
+    b, g, r = _new_text_pixels(out, mask).mean(axis=0)
+    assert b > r + 60 and b > g + 50            # nettement bleu, comme l'original
+    assert min(b, g, r) > 20                    # jamais un noir pur
+
+
+def test_without_ink_sampling_the_text_is_neutral_gray(scene):
+    frame, quad, mask = make_scene(ink=BLUE_INK)
+    pipe = _pipeline("Nouveau texte")
+    pipe.config.photometry.sample_ink = False
+    pipe.set_target(quad)
+    out = pipe.process(frame, quad)
+    b, g, r = _new_text_pixels(out, mask).mean(axis=0)
+    assert abs(b - r) < 15
+
+
+def _text_centroid_x(pipe, frame, quad, mask):
+    """Barycentre (x) de l'encre, mesuré uniquement *dans* la feuille : le bureau
+    sombre autour, immobile, écraserait sinon le déplacement du texte."""
+    out = pipe.process(frame, quad).astype(np.float32).mean(axis=2)
+    inner = cv2.erode(mask, np.ones((9, 9), np.uint8)) > 0
+    ink = np.where(inner, np.clip(180.0 - out, 0, None), 0)
+    ys, xs = np.nonzero(ink)
+    return float((xs * ink[ys, xs]).sum() / ink[ys, xs].sum())
+
+
+def test_nudge_moves_text_by_half_a_pixel_on_screen(scene):
+    frame, quad, mask = scene
+    # Texte d'origine effacé (sinon, immobile, il domine le barycentre) ; sans
+    # grain aléatoire pour une mesure déterministe.
+    pipe = _pipeline("DECALAGE", grain_strength=0.0)
+    pipe.config.photometry.noise_sigma = 0.0
+    pipe.set_target(quad)
+    before = _text_centroid_x(pipe, frame, quad, mask)
+    pipe.nudge_text(0.5, 0.0)
+    after = _text_centroid_x(pipe, frame, quad, mask)
+    assert after - before == pytest.approx(0.5, abs=0.12)   # mesuré : +0,455 px
+    pipe.nudge_text(0.5, 0.0)
+    assert _text_centroid_x(pipe, frame, quad, mask) - before == pytest.approx(1.0, abs=0.12)
+    pipe.reset_offset()
+    assert _text_centroid_x(pipe, frame, quad, mask) == pytest.approx(before, abs=0.02)
+
+
+def test_font_size_change_is_applied_live(scene):
+    frame, quad, _ = scene
+    pipe = _pipeline("Taille")
+    pipe.set_target(quad)
+    pipe.process(frame, quad)
+    auto = pipe.renderer.last_size
+    assert pipe.adjust_font_size(+3) == auto + 3
+    pipe.process(frame, quad)
+    assert pipe.renderer.last_size == auto + 3  # re-rendu sans relancer

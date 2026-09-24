@@ -7,8 +7,9 @@ perspective, l'éclairage et le grain de la vidéo. Le flux modifié est envoyé
 chaud depuis le terminal ou la fenêtre d'aperçu, sans jamais couper le flux.
 
 ```
-webcam ─► suivi du plan ─► effacement ─► rendu Pillow (.ttf) ─► warpPerspective ─► fusion Produit ─► OBS
- (thread)   LK + ORB + ZNCC   inpaint      texte en direct       homographie          luminosité, flou, grain
+webcam ─► suivi du plan ─► lissage 1€ ─► effacement ─► rendu police.ttf ─► warpPerspective ─► fusion Produit ─► OBS
+ (thread)   LK + ORB + ZNCC  anti-tremblement  inpaint    interlettrage, graisse  homographie   teinte de l'encre réelle,
+                                                                                                   flou optique, grain ISO
 ```
 
 ## Installation
@@ -30,11 +31,35 @@ pip install -r requirements.txt        # ou : pip install -e .[dev]
 Dans OBS : **Sources → + → Périphérique de capture vidéo** et choisissez la
 caméra virtuelle (« OBS Virtual Camera » ou « livetext » sous Linux).
 
+## Police
+
+Placez votre police vectorielle sous le nom **`police.ttf`** à côté de
+`main.py` (ou dans le dossier courant) : elle est chargée par
+`PIL.ImageFont.truetype`. Sans elle, une police système est utilisée et un
+avertissement l'indique. Les réglages se font dans les **variables globales**
+en tête de [`livetext/config.py`](livetext/config.py) :
+
+```python
+FONT_FILE = "police.ttf"  # police vectorielle locale, dans le dossier du script
+FONT_SIZE_PT = 0          # taille en points ; 0 = automatique d'après la feuille
+TRACKING = 0.0            # interlettrage en points (négatif = lettres resserrées)
+WEIGHT = 0.0              # graisse en points : > 0 plus gras, < 0 plus maigre
+NUDGE_STEP_PX = 0.5       # flèches : décalage du texte, en pixels écran
+FONT_STEP_PT = 1          # + / - : taille de police, en points
+```
+
+1 point = 1 pixel de la feuille rectifiée (~1 pixel à l'écran). Le rendu est
+suréchantillonné ×4 : graisse et interlettrage se règlent au quart de point.
+La graisse épaissit (contour) ou amincit (érosion) les traits de la police ;
+pour une vraie graisse dessinée, utilisez la variante grasse de la police
+comme `police.ttf`. Les options `--font`, `--font-size`, `--tracking` et
+`--weight` surchargent ces valeurs.
+
 ## Utilisation
 
 ```bash
-# Webcam 0 en 720p/30 i/s → OBS + fenêtre d'aperçu, avec votre police
-python main.py --font polices/MaPolice.ttf --text "Bonjour le direct !"
+# Webcam 0 en 720p/30 i/s → OBS + fenêtre d'aperçu, police.ttf du dossier
+python main.py --text "Bonjour le direct !"
 
 # 1080p, texte centré, diagnostic affiché
 python main.py --resolution 1080p --align center --valign middle --debug
@@ -62,15 +87,29 @@ Deux canaux, utilisables en même temps, qui n'interrompent jamais la vidéo :
 | `/reset` | relance la détection automatique de la feuille |
 | `/select` | sélection manuelle des 4 coins (fenêtre) |
 | `/erase plate\|inpaint\|median\|none` | méthode d'effacement |
-| `/align left\|center\|right` · `/size <px>` | mise en page à chaud |
+| `/align left\|center\|right` · `/size <pt>` | mise en page à chaud (`/size 0` = auto) |
+| `/tracking <pt>` · `/weight <pt>` | interlettrage, graisse |
+| `/nudge <dx> <dy>` · `/recenter` | décaler le texte (pixels écran, ex. `0.5 0`), annuler |
 | `/debug` · `/help` · `/quit` | diagnostic, aide, quitter |
 | `//texte` | texte commençant par `/` |
 
 **Fenêtre d'aperçu** (bandeau d'entrée) — `t` ou Entrée ouvre la saisie ; le
 texte incrusté **suit chaque frappe** ; Entrée valide, Échap annule.
-Hors saisie : `r` redétecter, `s` sélection manuelle, `d` diagnostic, `q`
-quitter (Échap ne quitte volontairement pas, pour ne pas couper un direct).
-Les caractères non latins se saisissent plus sûrement par le terminal.
+
+**Réglage fin en direct**, sans relancer le script :
+
+| Touche | Effet |
+|---|---|
+| ← → ↑ ↓ | décale le texte d'**un demi-pixel** à l'écran (aussi pendant la saisie) |
+| `+` (ou `=`) / `-` | taille de police ± 1 point |
+| `0` | annule le décalage |
+
+Le décalage est mémorisé dans le plan de la feuille : il suit la feuille
+quand elle bouge. Autres touches : `r` redétecter, `s` sélection manuelle,
+`d` diagnostic (taille, interlettrage, graisse, décalage, teinte d'encre),
+`q` quitter (Échap ne quitte volontairement pas, pour ne pas couper un
+direct). Les caractères non latins se saisissent plus sûrement par le
+terminal.
 
 ## Fonctionnement
 
@@ -107,8 +146,17 @@ ombres et plis), `inpaint` (pleine résolution), `median` (teinte médiane du
 papier, masque flouté). Le grain du papier est mesuré et **réinjecté** : pas de
 rectangle uni.
 
-**Rendu** : Pillow `ImageFont.truetype` sur votre `.ttf`, retour à la ligne et
-ajustement automatique de la taille dans la boîte `--text-box`.
+**Stabilité temporelle** : les 4 coins de l'homographie passent par un
+filtre passe-bas adaptatif **One Euro** (Casiez et al., 2012) : lissage fort
+à l'arrêt, coupure qui monte avec la vitesse pour ne pas traîner derrière la
+feuille. La coupure est commune aux 4 coins (la feuille ne se cisaille pas),
+seule la sortie est lissée (le suivi n'est pas biaisé), et le filtre repart à
+zéro après une relocalisation (le texte ne « glisse » pas).
+
+**Rendu** : `police.ttf` via `ImageFont.truetype`, retour à la ligne et
+ajustement automatique de la taille dans la boîte `--text-box`. L'interlettrage
+place chaque glyphe à `longueur(préfixe) + i × interlettrage`, ce qui
+**conserve le crénage**.
 
 **Déformation** : `cv2.getPerspectiveTransform` canevas → coins suivis puis
 `cv2.warpPerspective`, limité au rectangle englobant du texte (le coût suit la
@@ -116,13 +164,18 @@ surface du texte, pas celle de la feuille), avec préfiltre anti-crénelage quan
 la feuille s'éloigne.
 
 **Photométrie** :
-- fusion **Produit** : `résultat = papier × calque` — plis, ombres et grain restent
-  visibles sous l'encre ;
-- luminosité moyenne du papier mesurée **autour** de la zone (hors encre
-  d'origine, moyenne tronquée, lissée dans le temps) → luminance de l'encre
-  `= L_papier × --ink-ratio`, bornée pour ne jamais devenir un noir « collé » ;
-- léger flou gaussien (`--blur`) et bruit gaussien (`--noise`) pour égaler la
-  défocalisation et le grain du capteur.
+- **teinte de l'encre réelle** : la feuille physique porte toujours son texte
+  imprimé, visible dans chaque image brute. Autour de la zone, on garde les
+  pixels du masque nettement plus sombres que le papier, puis le cœur des
+  traits (30 % les plus sombres, pas le halo anticrénelé) : leur médiane donne
+  la couleur exacte de l'encre (stylo bleu, encre brune…). Jamais de noir pur ;
+  repli sur un gris `L_papier × --ink-ratio` sur une feuille vierge ;
+- fusion **Produit** par canal : `facteur = encre / papier`, donc
+  `papier × facteur` redonne exactement la teinte de l'encre, tandis que plis,
+  ombres et grain restent visibles sous l'encre numérique ;
+- couleurs du papier et de l'encre lissées dans le temps (pas de « pompage ») ;
+- micro-flou gaussien (`--blur`) et bruit gaussien (`--noise`) pour égaler le
+  flou optique et le bruit ISO du capteur.
 
 ### 3. Contrôle en direct — `controls.py`
 Thread démon de lecture du terminal + bandeau `cv2.waitKeyEx(1)` non bloquant ;
@@ -130,15 +183,20 @@ les deux alimentent la même file de commandes, exécutée par la boucle vidéo.
 
 ## Performances et précision
 
-Mesurées dans un conteneur Linux à 4 vCPU, sans GPU (scène synthétique :
-feuille en rotation ±8°, échelle ±8 %, perspective, éclairage mobile) :
+Mesurées dans un conteneur Linux à 4 vCPU, sans GPU, sur une scène
+synthétique **en mouvement** (feuille en rotation ±8°, échelle ±8 %,
+perspective, éclairage mobile, bruit capteur indépendant à chaque image) :
 
 | | 720p | 1080p |
 |---|---|---|
-| Suivi (`hybrid`) | ~4,5 ms | ~4 ms |
-| Effacement + rendu + intégration | ~15 ms | ~24 ms |
-| Erreur de coin (moy. / max, 200 images) | 1,3 / 1,7 px | 1,8 / 2,4 px |
+| Suivi + effacement + rendu + intégration (moyenne / p95) | 19,7 / 22,4 ms | 30,7 / 34,5 ms |
+| Erreur de coin en mouvement (moyenne / max, 200 images) | 0,75 / 1,5 px | 1,6 / 1,9 px |
+| Tremblement à l'arrêt, après lissage One Euro | ÷ 12 | ÷ 13 |
 
+Budget à 30 i/s : 33,3 ms. En 1080p, la moyenne tient mais quelques images le
+dépassent : la capture ne gardant que la dernière image, cela coûte au plus
+une image sautée de temps à autre, jamais de retard cumulé. Une machine plus
+puissante que ce conteneur aura de la marge ; sinon, préférez le 720p.
 Détection initiale : 0,6-0,7 px d'erreur moyenne sur 30 poses, sans échec.
 
 ## Tests
@@ -148,8 +206,10 @@ pip install pytest
 python -m pytest
 ```
 
-71 tests, sans caméra ni OBS (scène synthétique) : géométrie, rendu, fusion
-Produit, effacement, précision du suivi, contrôles, application de bout en bout.
+115 tests, sans caméra ni OBS (scène synthétique) : géométrie, police locale,
+interlettrage et graisse, teinte de l'encre, fusion Produit, effacement,
+précision du suivi, anti-tremblement, décalage au demi-pixel, raccourcis,
+application de bout en bout.
 
 ## Limites et conseils
 

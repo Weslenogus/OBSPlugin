@@ -24,7 +24,7 @@ from .geometry import Quad, is_valid_quad, order_quad
 from .pipeline import TextReplacementPipeline
 from .sinks import WINDOW_NAME, FrameSink, WindowSink, open_sinks
 from .sources import FramePacer, FrameSource, open_source
-from .textrender import find_default_font, load_font
+from .textrender import find_default_font, find_system_font, load_font
 from .tracker import PlanarTracker, detect_document_quad
 
 log = logging.getLogger("livetext")
@@ -55,6 +55,14 @@ class RunStats:
                 f"{ms.mean():.1f} ms (p95 {np.percentile(ms, 95):.1f} ms), "
                 f"feuille suivie sur {100 * self.tracked / max(1, self.frames):.0f} % "
                 f"des images")
+
+
+def _is_number(text: str) -> bool:
+    try:
+        float(text)
+    except ValueError:
+        return False
+    return True
 
 
 def parse_quad(spec: str) -> Quad:
@@ -103,15 +111,17 @@ class LiveTextApp:
         self.sinks = sinks if sinks is not None else open_sinks(
             config.outputs, width, height, config.fps, config.virtualcam_backend)
         self.window = next((s for s in self.sinks if isinstance(s, WindowSink)), None)
-        self.tracker = PlanarTracker(config.tracker)
+        self.tracker = PlanarTracker(config.tracker, fps=config.fps)
         self.pipeline = TextReplacementPipeline(config, seed=seed)
         self.controller = TextController(config.text.initial_text)
         self.stats = RunStats()
         self._fixed_quad = None if config.init in ("auto", "manual") else parse_quad(config.init)
         self._running = False
         self._ms_avg = 0.0
-        # Police de l'interface : police système, sinon celle fournie (--font).
-        self._ui_font = None if find_default_font() else config.text.font_path
+        # Police de l'interface : police système lisible (pas la police.ttf du
+        # texte incrusté, parfois décorative), sinon celle du texte.
+        self._ui_font = (find_system_font() or config.text.font_path
+                         or find_default_font())
 
     def _read(self) -> np.ndarray | None:
         """Lit une image, en miroir si demandé : *tous* les traitements (suivi,
@@ -218,8 +228,19 @@ class LiveTextApp:
             self.config.text.align = arg
             self.pipeline.invalidate_text()
         elif name == "size" and arg.isdigit():
+            # Taille explicite : respectée telle quelle ; 0 = retour à l'auto.
             self.config.text.font_size = int(arg)
-            self.pipeline.invalidate_text()
+            self.config.text.auto_fit = int(arg) == 0
+        elif name == "fontsize" and _is_number(arg):
+            size = self.pipeline.adjust_font_size(int(float(arg)))
+            log.info("Taille de police : %d pt", size)
+        elif name == "nudge" and len(arg.split()) == 2 and all(map(_is_number, arg.split())):
+            self.pipeline.nudge_text(*(float(v) for v in arg.split()))
+        elif name == "recenter":
+            self.pipeline.reset_offset()
+        elif name in ("tracking", "weight") and _is_number(arg):
+            setattr(self.config.text, name, float(arg))
+            log.info("%s : %s pt", "Interlettrage" if name == "tracking" else "Graisse", arg)
         else:
             log.warning("Commande inconnue ou argument invalide : /%s %s (voir /help)",
                         name, arg)
@@ -235,16 +256,22 @@ class LiveTextApp:
             if quad is not None:
                 cv2.polylines(view, [np.round(quad).astype(np.int32)], True,
                               (0, 255, 0), 2, cv2.LINE_AA)
-            dbg = self.pipeline.debug
+            dbg, t = self.pipeline.debug, self.config.text
+            ink = ("gris (pas d'encre visible)" if dbg.ink_bgr is None else
+                   "BGR " + ",".join(f"{v:.0f}" for v in dbg.ink_bgr))
+            ox, oy = self.pipeline.text_offset
             self._put_text(view, f"{self.stats.fps:4.1f} i/s | {self._ms_avg:4.1f} ms | "
                                  f"suivi : {self.tracker.status} | L papier "
-                                 f"{dbg.paper_luminance:.0f} | effacement : "
-                                 f"{self.config.erase.method}", (10, 10), size)
+                                 f"{dbg.paper_luminance:.0f} | encre {ink}", (10, 10), size)
+            self._put_text(view, f"taille {self.pipeline.renderer.last_size} pt | "
+                                 f"interlettrage {t.tracking:+.2f} | graisse {t.weight:+.2f} | "
+                                 f"décalage ({ox:+.1f}, {oy:+.1f}) | effacement : "
+                                 f"{self.config.erase.method}", (10, 10 + 2 * size), size)
         if quad is None:
             hint = ("Recherche de la feuille…  (s = sélection manuelle)"
                     if self.config.init != "manual" or self.tracker.initialized
                     else "Appuyez sur s pour sélectionner la feuille")
-            self._put_text(view, hint, (10, 10 + 2 * size if self.config.show_debug else 10),
+            self._put_text(view, hint, (10, 10 + 4 * size if self.config.show_debug else 10),
                            size, background=(0, 0, 160))
         if self.controller.editing:
             self._put_text(view, f"Texte : {self.controller.buffer}▌   (Entrée = valider, "
@@ -377,8 +404,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     txt = p.add_argument_group("texte")
     txt.add_argument("--text", help="texte initial (\\n = saut de ligne)")
-    txt.add_argument("--font", help="police vectorielle .ttf/.otf")
-    txt.add_argument("--font-size", type=int, default=0, help="px canevas, 0 = auto")
+    txt.add_argument("--font", dest="font", help="police vectorielle (défaut : police.ttf)")
+    txt.add_argument("--font-size", type=int, default=None,
+                     help="taille en points (0 = auto ; défaut : FONT_SIZE_PT)")
+    txt.add_argument("--tracking", type=float, default=None,
+                     help="interlettrage en points (défaut : TRACKING)")
+    txt.add_argument("--weight", type=float, default=None,
+                     help="graisse en points, négatif = plus maigre (défaut : WEIGHT)")
     txt.add_argument("--text-box", type=_box, help="boîte du texte x0,y0,x1,y1 (0-1)")
     txt.add_argument("--align", choices=("left", "center", "right"), default="left")
     txt.add_argument("--valign", choices=("top", "middle", "bottom"), default="top")
@@ -387,8 +419,10 @@ def build_parser() -> argparse.ArgumentParser:
     fx.add_argument("--erase", choices=("plate", "inpaint", "median", "none"),
                     default="plate")
     fx.add_argument("--erase-region", type=_box, help="zone à effacer x0,y0,x1,y1 (0-1)")
+    fx.add_argument("--no-ink-sampling", action="store_true",
+                    help="ne pas échantillonner la couleur de l'encre réelle")
     fx.add_argument("--ink-ratio", type=float, default=0.22,
-                    help="luminance encre / papier (fusion Produit)")
+                    help="repli sans encre visible : luminance encre / papier")
     fx.add_argument("--blur", type=float, default=0.8, help="sigma du flou de l'encre")
     fx.add_argument("--noise", type=float, default=2.5, help="sigma du grain ajouté")
 
@@ -412,13 +446,20 @@ def config_from_args(args: argparse.Namespace) -> AppConfig:
     if args.text is not None:
         cfg.text.initial_text = args.text
     cfg.text.font_path = args.font
-    cfg.text.font_size = args.font_size
+    # None = on garde les variables globales de config.py.
+    if args.font_size is not None:
+        cfg.text.font_size = args.font_size
+    if args.tracking is not None:
+        cfg.text.tracking = args.tracking
+    if args.weight is not None:
+        cfg.text.weight = args.weight
     cfg.text.align, cfg.text.valign = args.align, args.valign
     if args.text_box:
         cfg.text.box = args.text_box
     cfg.erase.method = args.erase
     if args.erase_region:
         cfg.erase.region = args.erase_region
+    cfg.photometry.sample_ink = not args.no_ink_sampling
     cfg.photometry.ink_ratio = args.ink_ratio
     cfg.photometry.blur_sigma = args.blur
     cfg.photometry.noise_sigma = args.noise

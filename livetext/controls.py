@@ -19,6 +19,8 @@ import sys
 import threading
 from dataclasses import dataclass
 
+from .config import FONT_STEP_PT, NUDGE_STEP_PX
+
 log = logging.getLogger(__name__)
 
 HELP = """\
@@ -29,17 +31,34 @@ Commandes (terminal) :
   /select            sélection manuelle des 4 coins (fenêtre)
   /erase <méthode>   plate | inpaint | median | none
   /align <valeur>    left | center | right
-  /size <px>         taille de police (0 = automatique)
+  /size <pt>         taille de police (0 = automatique)
+  /tracking <pt>     interlettrage (négatif = resserré)
+  /weight <pt>       graisse (négatif = plus maigre)
+  /nudge <dx> <dy>   décale le texte (pixels écran, ex. /nudge 0.5 0)
+  /recenter          annule le décalage
   /debug             affiche/masque le diagnostic
   /quit              quitte
   //texte            texte commençant par « / »
 Fenêtre d'aperçu : t ou Entrée = saisir, Échap = annuler, r = redétecter,
-                   s = sélection manuelle, d = diagnostic, q = quitter."""
+                   s = sélection manuelle, d = diagnostic, q = quitter,
+                   flèches = décaler le texte d'un demi-pixel,
+                   + / - = taille de police, 0 = recentrer."""
 
 # Codes renvoyés par cv2.waitKeyEx selon les plateformes.
 _ENTER = {10, 13, 65421}
 _ESC = {27}
 _BACKSPACE = {8, 127, 65288}
+# Flèches → direction (dx, dy). Codes selon l'interface d'OpenCV :
+# GTK/X11, Windows, macOS (Cocoa) et Qt.
+_ARROWS = {
+    65361: (-1, 0), 65362: (0, -1), 65363: (1, 0), 65364: (0, 1),
+    2424832: (-1, 0), 2490368: (0, -1), 2555904: (1, 0), 2621440: (0, 1),
+    63234: (-1, 0), 63232: (0, -1), 63235: (1, 0), 63233: (0, 1),
+    16777234: (-1, 0), 16777235: (0, -1), 16777236: (1, 0), 16777237: (0, 1),
+}
+# « = » compte comme « + » (même touche sans Maj) ; pavé numérique (GTK).
+_PLUS = {ord("+"), ord("="), 65451}
+_MINUS = {ord("-"), 65453}
 
 
 @dataclass(frozen=True)
@@ -116,6 +135,9 @@ class TextController:
         """Traite une touche de la fenêtre ; renvoie une commande éventuelle."""
         if key < 0:
             return None
+        if key in _ARROWS:  # actif même pendant la saisie (non imprimable)
+            dx, dy = _ARROWS[key]
+            return Command("nudge", f"{dx * NUDGE_STEP_PX} {dy * NUDGE_STEP_PX}")
         if self.editing:
             if key in _ENTER:
                 self.set_text(self.buffer)
@@ -144,6 +166,12 @@ class TextController:
             return Command("select")
         elif char == "d":
             return Command("debug")
+        elif key in _PLUS:
+            return Command("fontsize", f"+{FONT_STEP_PT}")
+        elif key in _MINUS:
+            return Command("fontsize", f"-{FONT_STEP_PT}")
+        elif char == "0":
+            return Command("recenter")
         return None
 
 
