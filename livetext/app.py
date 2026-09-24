@@ -108,10 +108,12 @@ class LiveTextApp:
         width, height = config.frame_size
         self.source = source or open_source(config.source, width, height,
                                             config.fps, seed=seed or 0)
+        # Cadence réelle de la caméra si elle l'annonce (24 ou 30 i/s…).
+        self.fps = self.source.fps or config.fps
         self.sinks = sinks if sinks is not None else open_sinks(
-            config.outputs, width, height, config.fps, config.virtualcam_backend)
+            config.outputs, width, height, round(self.fps), config.virtualcam_backend)
         self.window = next((s for s in self.sinks if isinstance(s, WindowSink)), None)
-        self.tracker = PlanarTracker(config.tracker, fps=config.fps)
+        self.tracker = PlanarTracker(config.tracker, fps=self.fps)
         self.pipeline = TextReplacementPipeline(config, seed=seed)
         self.controller = TextController(config.text.initial_text)
         self.stats = RunStats()
@@ -238,6 +240,9 @@ class LiveTextApp:
             self.pipeline.nudge_text(*(float(v) for v in arg.split()))
         elif name == "recenter":
             self.pipeline.reset_offset()
+        elif name == "tracking_delta" and _is_number(arg):
+            self.config.text.tracking = round(self.config.text.tracking + float(arg), 4)
+            log.info("Interlettrage : %+.2f pt", self.config.text.tracking)
         elif name in ("tracking", "weight") and _is_number(arg):
             setattr(self.config.text, name, float(arg))
             log.info("%s : %s pt", "Interlettrage" if name == "tracking" else "Graisse", arg)
@@ -265,8 +270,11 @@ class LiveTextApp:
                                  f"{dbg.paper_luminance:.0f} | encre {ink}", (10, 10), size)
             self._put_text(view, f"taille {self.pipeline.renderer.last_size} pt | "
                                  f"interlettrage {t.tracking:+.2f} | graisse {t.weight:+.2f} | "
-                                 f"décalage ({ox:+.1f}, {oy:+.1f}) | effacement : "
-                                 f"{self.config.erase.method}", (10, 10 + 2 * size), size)
+                                 f"décalage ({ox:+.1f}, {oy:+.1f}) | grain ISO "
+                                 f"{dbg.noise_sigma:.1f} | effacement : "
+                                 f"{self.config.erase.method} | "
+                                 f"{'GPU' if self.pipeline.accel.enabled else 'CPU'}",
+                           (10, 10 + 2 * size), size)
         if quad is None:
             hint = ("Recherche de la feuille…  (s = sélection manuelle)"
                     if self.config.init != "manual" or self.tracker.initialized
@@ -401,6 +409,10 @@ def build_parser() -> argparse.ArgumentParser:
                      help="auto | manual | x1,y1,x2,y2,x3,y3,x4,y4 (pixels)")
     tgt.add_argument("--tracker", choices=("hybrid", "flow", "orb", "contour"),
                      default="hybrid")
+    tgt.add_argument("--smoothing", choices=("oneeuro", "ema"), default="oneeuro",
+                     help="stabilisation des coins : adaptative (One Euro) ou EMA")
+    tgt.add_argument("--ema-alpha", type=float, default=0.1,
+                     help="α de la moyenne mobile en mode --smoothing ema")
 
     txt = p.add_argument_group("texte")
     txt.add_argument("--text", help="texte initial (\\n = saut de ligne)")
@@ -418,15 +430,22 @@ def build_parser() -> argparse.ArgumentParser:
     fx = p.add_argument_group("effacement et photométrie")
     fx.add_argument("--erase", choices=("plate", "inpaint", "median", "none"),
                     default="plate")
+    fx.add_argument("--inpaint-algo", choices=("telea", "ns"), default="telea",
+                    help="cv2.inpaint : Telea ou Navier-Stokes")
     fx.add_argument("--erase-region", type=_box, help="zone à effacer x0,y0,x1,y1 (0-1)")
     fx.add_argument("--no-ink-sampling", action="store_true",
                     help="ne pas échantillonner la couleur de l'encre réelle")
     fx.add_argument("--ink-ratio", type=float, default=0.22,
                     help="repli sans encre visible : luminance encre / papier")
     fx.add_argument("--blur", type=float, default=0.8, help="sigma du flou de l'encre")
-    fx.add_argument("--noise", type=float, default=2.5, help="sigma du grain ajouté")
+    fx.add_argument("--noise", type=float, default=None,
+                    help="grain ISO fixe (désactive la calibration automatique)")
+    fx.add_argument("--noise-gain", type=float, default=1.0,
+                    help="échelle du grain calibré sur le bruit de la caméra")
 
     misc = p.add_argument_group("divers")
+    misc.add_argument("--gpu", choices=("auto", "on", "off"), default="auto",
+                      help="accélération CUDA (OpenCV compilé avec CUDA requis)")
     misc.add_argument("--debug", action="store_true", help="diagnostic dans l'aperçu")
     misc.add_argument("--no-stdin", action="store_true",
                       help="ne pas lire le texte depuis le terminal")
@@ -438,11 +457,13 @@ def build_parser() -> argparse.ArgumentParser:
 def config_from_args(args: argparse.Namespace) -> AppConfig:
     cfg = AppConfig(source=args.source, resolution=args.resolution, fps=args.fps,
                     virtualcam_backend=args.virtualcam_backend, mirror=args.mirror,
-                    init=args.init, show_debug=args.debug,
+                    init=args.init, show_debug=args.debug, gpu=args.gpu,
                     stdin_input=not args.no_stdin)
     if args.outputs:
         cfg.outputs = args.outputs
     cfg.tracker.mode = args.tracker
+    cfg.tracker.smoothing_mode = args.smoothing
+    cfg.tracker.ema_alpha = args.ema_alpha
     if args.text is not None:
         cfg.text.initial_text = args.text
     cfg.text.font_path = args.font
@@ -457,12 +478,16 @@ def config_from_args(args: argparse.Namespace) -> AppConfig:
     if args.text_box:
         cfg.text.box = args.text_box
     cfg.erase.method = args.erase
+    cfg.erase.inpaint_algo = args.inpaint_algo
     if args.erase_region:
         cfg.erase.region = args.erase_region
     cfg.photometry.sample_ink = not args.no_ink_sampling
     cfg.photometry.ink_ratio = args.ink_ratio
     cfg.photometry.blur_sigma = args.blur
-    cfg.photometry.noise_sigma = args.noise
+    if args.noise is not None:  # valeur imposée : pas de calibration
+        cfg.photometry.noise_auto = False
+        cfg.photometry.noise_sigma = args.noise
+    cfg.photometry.noise_gain = args.noise_gain
     return cfg
 
 

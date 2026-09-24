@@ -30,10 +30,11 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 
-from .compositor import NoiseBank
+from .compositor import NoiseBank, estimate_noise_sigma
 from .config import EraseConfig
 
 _PLATE_DOWNSCALE = 4
+_INPAINT_ALGOS = {"telea": cv2.INPAINT_TELEA, "ns": cv2.INPAINT_NS}
 
 
 @dataclass
@@ -131,20 +132,24 @@ class TextEraser:
 
     # -- reconstructions (sur l'extrait) -------------------------------------
 
-    @staticmethod
-    def _plate(crop: np.ndarray, mask: np.ndarray) -> np.ndarray:
+    @property
+    def _algo(self) -> int:
+        """Telea (rapide) ou Navier-Stokes (NS, propagation de type fluide)."""
+        return _INPAINT_ALGOS.get(self.config.inpaint_algo, cv2.INPAINT_TELEA)
+
+    def _plate(self, crop: np.ndarray, mask: np.ndarray) -> np.ndarray:
         h, w = crop.shape[:2]
         sw, sh = max(8, w // _PLATE_DOWNSCALE), max(8, h // _PLATE_DOWNSCALE)
         small = cv2.resize(crop, (sw, sh), interpolation=cv2.INTER_AREA)
         small_mask = cv2.resize(mask, (sw, sh), interpolation=cv2.INTER_AREA)
         small_mask = cv2.dilate((small_mask > 0).astype(np.uint8) * 255,
                                 np.ones((3, 3), np.uint8))
-        filled = cv2.inpaint(small, small_mask, 3, cv2.INPAINT_TELEA)
+        filled = cv2.inpaint(small, small_mask, 3, self._algo)
         filled = cv2.GaussianBlur(filled, (0, 0), 1.0)
         return cv2.resize(filled, (w, h), interpolation=cv2.INTER_CUBIC)
 
     def _inpaint(self, crop: np.ndarray, mask: np.ndarray) -> np.ndarray:
-        return cv2.inpaint(crop, mask, self.config.inpaint_radius, cv2.INPAINT_TELEA)
+        return cv2.inpaint(crop, mask, self.config.inpaint_radius, self._algo)
 
     @staticmethod
     def _median(crop: np.ndarray, mask: np.ndarray) -> np.ndarray:
@@ -154,17 +159,6 @@ class TextEraser:
         color = np.median(paper.reshape(-1, 3), axis=0).astype(np.uint8)
         return np.broadcast_to(color, crop.shape).copy()
 
-    @staticmethod
-    def _paper_grain_sigma(crop: np.ndarray, mask: np.ndarray) -> float:
-        """Écart-type robuste du grain haute fréquence du papier (hors texte)."""
-        gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY).astype(np.float32)
-        residual = gray - cv2.GaussianBlur(gray, (0, 0), 1.5)
-        values = residual[mask == 0]
-        if values.size < 100:
-            return 0.0
-        values = values[:: max(1, values.size // 20000)]  # sous-échantillonnage
-        # MAD : estimateur robuste, insensible aux quelques traits restants.
-        return float(1.4826 * np.median(np.abs(values - np.median(values))))
 
     # -- API ----------------------------------------------------------------
 
@@ -196,7 +190,7 @@ class TextEraser:
             clean = self._plate(crop, crop_mask)
 
         if cfg.grain_strength > 0 and cfg.method != "inpaint":
-            sigma = self._paper_grain_sigma(crop, crop_mask) * cfg.grain_strength
+            sigma = estimate_noise_sigma(crop, crop_mask) * cfg.grain_strength
             if sigma > 0.05:
                 grain = self.noise.sample(*clean.shape[:2]) * sigma
                 clean = np.clip(clean.astype(np.float32) + grain[..., None],

@@ -28,10 +28,13 @@ def _apply(result, canvas):
     return out
 
 
-@pytest.mark.parametrize("method", ["plate", "inpaint", "median"])
-def test_erase_removes_strokes_without_flat_patch(method):
+@pytest.mark.parametrize("method,algo", [("plate", "telea"), ("plate", "ns"),
+                                         ("inpaint", "telea"), ("inpaint", "ns"),
+                                         ("median", "telea")])
+def test_erase_removes_strokes_without_flat_patch(method, algo):
     canvas, strokes = _canvas_with_text()
-    result = TextEraser(EraseConfig(method=method, temporal_decay=0)).erase(canvas)
+    result = TextEraser(EraseConfig(method=method, inpaint_algo=algo,
+                                    temporal_decay=0)).erase(canvas)
     assert not result.empty
     assert result.text_mask[strokes].mean() > 250  # tous les traits détectés
     out = _apply(result, canvas)

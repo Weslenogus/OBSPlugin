@@ -4,6 +4,7 @@ import pytest
 from livetext.compositor import (
     NoiseBank,
     composite_ink,
+    estimate_noise_sigma,
     ink_multiply_factor,
     ink_multiply_factors,
     measure_ink_color,
@@ -140,3 +141,41 @@ def test_sampled_ink_is_never_pure_black():
     cfg = PhotometryConfig()
     factors = ink_multiply_factors(PAPER, BLUE_INK, cfg)
     assert (factors > 0.1).all()
+
+
+@pytest.mark.parametrize("sigma", [1.0, 3.0, 8.0])
+def test_noise_estimator_measures_sensor_noise(sigma):
+    rng = np.random.default_rng(0)
+    img = np.clip(128 + rng.normal(0, sigma, (200, 300)), 0, 255).astype(np.uint8)
+    # Le passe-haut (image - flou σ=1,5) retire ~5 % de l'énergie du bruit blanc.
+    assert estimate_noise_sigma(img) == pytest.approx(0.945 * sigma, rel=0.1)
+
+
+def test_noise_estimator_ignores_masked_ink():
+    rng = np.random.default_rng(0)
+    img = np.clip(200 + rng.normal(0, 2.0, (200, 300)), 0, 255).astype(np.uint8)
+    mask = np.zeros((200, 300), np.uint8)
+    img[50:150:4, :] = 20            # traits d'encre très contrastés
+    mask[50:150, :] = 255
+    assert estimate_noise_sigma(img, mask) == pytest.approx(0.945 * 2.0, rel=0.15)
+
+
+def test_explicit_noise_sigma_overrides_config():
+    cfg = PhotometryConfig(blur_sigma=0, noise_sigma=0.0)
+    out = composite_ink(_flat(200), np.ones((40, 60), np.float32), np.full(3, 0.5), cfg,
+                        NoiseBank(0), noise_sigma=6.0)
+    assert out.std() > 3
+
+
+def test_black_point_follows_a_shadow_proportionally():
+    """Black point matching : une ombre sur la feuille assombrit l'encre
+    virtuelle dans la même proportion (jamais un noir figé)."""
+    cfg = PhotometryConfig(blur_sigma=0, noise_sigma=0)
+    factors = ink_multiply_factors(PAPER, BLUE_INK, cfg)
+    cov = np.ones((40, 60), np.float32)
+    lit = composite_ink(np.tile(PAPER, (40, 60, 1)).astype(np.uint8), cov, factors, cfg,
+                        NoiseBank(0))
+    shadow = composite_ink((np.tile(PAPER, (40, 60, 1)) * 0.6).astype(np.uint8), cov,
+                           factors, cfg, NoiseBank(0))
+    ratio = shadow.reshape(-1, 3).mean(axis=0) / lit.reshape(-1, 3).mean(axis=0)
+    np.testing.assert_allclose(ratio, 0.6, atol=0.03)

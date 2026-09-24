@@ -52,6 +52,23 @@ def luminance(bgr: np.ndarray) -> np.ndarray:
     return 0.114 * b + 0.587 * g + 0.299 * r
 
 
+def estimate_noise_sigma(image: np.ndarray, mask: np.ndarray | None = None) -> float:
+    """Écart-type du bruit capteur visible sur le papier (hors encre).
+
+    Résidu haute fréquence (image - flou) puis estimateur MAD, robuste aux
+    quelques traits d'encre restants. Sert à calibrer le grain ISO ajouté sur
+    l'encre, et le grain réinjecté dans le papier effacé, sur la vraie caméra.
+    """
+    gray = image if image.ndim == 2 else cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    gray = gray.astype(np.float32)
+    residual = gray - cv2.GaussianBlur(gray, (0, 0), 1.5)
+    values = residual[mask == 0] if mask is not None else residual.ravel()
+    if values.size < 100:
+        return 0.0
+    values = values[:: max(1, values.size // 20000)]  # sous-échantillonnage
+    return float(1.4826 * np.median(np.abs(values - np.median(values))))
+
+
 def _ring_box(shape: tuple[int, ...], box_px: tuple[int, int, int, int],
               ring: int) -> tuple[int, int, int, int]:
     """Boîte de texte élargie de ``ring`` px et bornée au canevas."""
@@ -162,12 +179,13 @@ def ink_multiply_factors(paper_bgr: np.ndarray, ink_bgr: np.ndarray | None,
 
 def composite_ink(roi_bgr: np.ndarray, coverage: np.ndarray,
                   factors: np.ndarray, cfg: PhotometryConfig,
-                  noise: NoiseBank) -> np.ndarray:
+                  noise: NoiseBank, noise_sigma: float | None = None) -> np.ndarray:
     """Applique l'encre sur ``roi_bgr`` (uint8) et renvoie une nouvelle ROI.
 
     ``coverage`` est la couverture de l'encre (float32 0..1) déjà déformée
     dans l'espace image de la ROI ; ``factors`` les facteurs Produit par
-    canal de l'encre pleine (:func:`ink_multiply_factors`).
+    canal de l'encre pleine (:func:`ink_multiply_factors`). ``noise_sigma``
+    : écart-type du grain ISO (calibré sur la caméra) ; défaut ``cfg``.
     """
     if cfg.blur_sigma > 0:
         # Flou gaussien : l'encre subit la même défocalisation que la scène.
@@ -179,10 +197,11 @@ def composite_ink(roi_bgr: np.ndarray, coverage: np.ndarray,
     layer = cv2.merge([1.0 - coverage * (1.0 - float(f)) for f in factors])
     out = cv2.multiply(roi_bgr, layer, dtype=cv2.CV_32F)
 
-    if cfg.noise_sigma > 0:
+    sigma = cfg.noise_sigma if noise_sigma is None else noise_sigma
+    if sigma > 0:
         # Grain capteur : la multiplication a atténué le grain d'origine sous
         # l'encre ; on réinjecte un bruit léger (luminance) à cet endroit.
-        grain = noise.sample(*coverage.shape) * (cfg.noise_sigma * coverage)
+        grain = noise.sample(*coverage.shape) * (sigma * coverage)
         out += grain[..., None]
 
     return np.clip(out, 0, 255, out=out).astype(np.uint8)

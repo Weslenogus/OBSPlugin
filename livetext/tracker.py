@@ -26,7 +26,7 @@ import cv2
 import numpy as np
 
 from .config import TrackerConfig
-from .filters import OneEuroFilter
+from .filters import make_stabilizer
 from .geometry import (
     Quad,
     canvas_corners,
@@ -232,9 +232,7 @@ class PlanarTracker:
 
     def __init__(self, config: TrackerConfig | None = None, fps: float = 30.0):
         self.config = config or TrackerConfig()
-        cfg = self.config
-        self._filter = OneEuroFilter(fps, cfg.smooth_min_cutoff, cfg.smooth_beta,
-                                     cfg.smooth_d_cutoff)
+        self._filter = make_stabilizer(self.config, fps)
         self._orb = cv2.ORB_create(nfeatures=self.config.orb_features)
         self._matcher = cv2.BFMatcher(cv2.NORM_HAMMING)
         self.reset()

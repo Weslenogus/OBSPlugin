@@ -59,3 +59,40 @@ class OneEuroFilter:
         cutoff = self.min_cutoff + self.beta * speed
         self._x += _alpha(cutoff, self.dt) * (x - self._x)
         return self._x.astype(np.float32)
+
+
+class EMAFilter:
+    """Moyenne mobile exponentielle : ``y ← α·x + (1-α)·y`` (α petit = lisse).
+
+    Lissage constant, sans adaptation à la vitesse : idéal pour une scène
+    quasi immobile (page rigide, micro-mouvements de l'utilisateur), au prix
+    d'un retard visible si la feuille se déplace vite. ``OneEuroFilter`` est
+    préférable dès qu'il y a de vrais déplacements.
+    """
+
+    def __init__(self, alpha: float = 0.1):
+        self.alpha = float(np.clip(alpha, 0.0, 1.0))
+        self.reset()
+
+    def reset(self) -> None:
+        self._y: np.ndarray | None = None
+
+    def __call__(self, x: np.ndarray) -> np.ndarray:
+        x = np.asarray(x, dtype=np.float64)
+        if self._y is None or self.alpha <= 0:
+            self._y = x.copy()
+            return x.astype(np.float32)
+        self._y += self.alpha * (x - self._y)
+        return self._y.astype(np.float32)
+
+
+def make_stabilizer(config, fps: float = 30.0):
+    """Construit le stabilisateur des coins selon ``config`` (TrackerConfig).
+
+    ``smoothing_mode`` : ``"oneeuro"`` (défaut, adaptatif) ou ``"ema"``
+    (moyenne mobile exponentielle, ``ema_alpha``).
+    """
+    if getattr(config, "smoothing_mode", "oneeuro") == "ema":
+        return EMAFilter(config.ema_alpha)
+    return OneEuroFilter(fps, config.smooth_min_cutoff, config.smooth_beta,
+                         config.smooth_d_cutoff)

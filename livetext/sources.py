@@ -20,6 +20,8 @@ class FrameSource:
 
     #: vrai si la source impose elle-même la cadence (caméra en direct)
     live = False
+    #: cadence réelle annoncée par la source (None : inconnue)
+    fps: float | None = None
 
     def read(self) -> np.ndarray | None:  # pragma: no cover - interface
         raise NotImplementedError
@@ -57,6 +59,10 @@ class CameraSource(FrameSource):
             log.warning("La caméra fournit %dx%d au lieu de %dx%d demandés ; "
                         "les images seront redimensionnées.", *actual, width, height)
         log.info("Caméra %d : %dx%d à %.0f i/s", index, *actual, actual_fps or fps)
+        # Cadence réelle (webcam 24 i/s, téléphone en mode webcam…) : sert au
+        # filtre anti-tremblement et à la caméra virtuelle. Valeur absurde
+        # (0, 1000…) : certains pilotes n'annoncent rien de fiable.
+        self.fps = float(actual_fps) if 5 <= (actual_fps or 0) <= 120 else float(fps)
         self._size = (width, height)
 
         self._lock = threading.Condition()

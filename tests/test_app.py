@@ -170,3 +170,39 @@ def test_cli_font_settings_default_to_the_globals():
          "--no-ink-sampling"]))
     assert (cfg.text.font_size, cfg.text.tracking, cfg.text.weight) == (30, -0.5, 1.0)
     assert not cfg.photometry.sample_ink
+
+
+def test_tracking_keys_adjust_letter_spacing_live():
+    app, _ = _app()
+    for key in "]]][":
+        app.controller.push(app.controller.handle_key(ord(key)))
+    app.step(app._read())
+    assert app.config.text.tracking == pytest.approx(0.5)
+
+
+def test_cli_new_options():
+    cfg = config_from_args(build_parser().parse_args([
+        "--output", "none", "--gpu", "off", "--smoothing", "ema", "--ema-alpha", "0.1",
+        "--inpaint-algo", "ns", "--noise", "3", "--noise-gain", "1.5"]))
+    assert cfg.gpu == "off"
+    assert (cfg.tracker.smoothing_mode, cfg.tracker.ema_alpha) == ("ema", 0.1)
+    assert cfg.erase.inpaint_algo == "ns"
+    assert not cfg.photometry.noise_auto and cfg.photometry.noise_sigma == 3.0
+    defaults = config_from_args(build_parser().parse_args(["--output", "none"]))
+    assert defaults.photometry.noise_auto and defaults.gpu == "auto"
+
+
+def test_real_camera_rate_drives_the_stabilizer():
+    """Webcam à 24 i/s : le filtre anti-tremblement doit raisonner à 24 i/s."""
+    class Cam24(SyntheticSource):
+        live = True
+        fps = 24.0
+    cfg = AppConfig(stdin_input=False)
+    app = LiveTextApp(cfg, source=Cam24(960, 540, seed=3), sinks=[CaptureSink()], seed=0)
+    assert app.fps == 24.0
+    assert app.tracker._filter.dt == pytest.approx(1 / 24)
+
+
+def test_unknown_source_rate_falls_back_to_config():
+    app, _ = _app(fps=30)
+    assert app.fps == 30

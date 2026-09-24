@@ -26,10 +26,12 @@ from .compositor import (
     LUMA_BGR,
     NoiseBank,
     composite_ink,
+    estimate_noise_sigma,
     ink_multiply_factors,
     measure_ink_color,
     measure_paper_color,
 )
+from .accel import Accelerator
 from .config import AppConfig
 from .geometry import (
     Quad,
@@ -57,6 +59,7 @@ class FrameDebug:
     paper_luminance: float = 0.0
     paper_bgr: np.ndarray | None = None
     ink_bgr: np.ndarray | None = None      # None : pas d'encre visible (repli gris)
+    noise_sigma: float = 0.0               # grain ISO appliqué (calibré sur le capteur)
     erased_pixels: int = 0
     canvas: np.ndarray | None = None
     erase: EraseResult | None = None
@@ -65,8 +68,10 @@ class FrameDebug:
 class TextReplacementPipeline:
     """Efface le texte d'une feuille suivie et y incruste un nouveau texte."""
 
-    def __init__(self, config: AppConfig, seed: int | None = None):
+    def __init__(self, config: AppConfig, seed: int | None = None,
+                 accel: Accelerator | None = None):
         self.config = config
+        self.accel = accel or Accelerator(config.gpu)
         self.noise = NoiseBank(seed)
         self.eraser = TextEraser(config.erase, self.noise)
         self.renderer = TextRenderer(config.text)
@@ -77,6 +82,7 @@ class TextReplacementPipeline:
         self._coverage_box = (0, 0, 0, 0)
         self._paper_bgr: np.ndarray | None = None
         self._ink_bgr: np.ndarray | None = None
+        self._sensor_sigma: float | None = None
         # Décalage fin du texte, en pixels du *canevas* : il reste attaché à la
         # feuille quand elle bouge ; sous-pixel grâce au warp (origine réelle).
         self.text_offset = np.zeros(2, np.float64)
@@ -90,6 +96,7 @@ class TextReplacementPipeline:
         self.canvas_size = canvas_size_for_quad(quad, self.config.canvas_max_side)
         self.eraser.reset()
         self._paper_bgr = self._ink_bgr = None
+        self._sensor_sigma = None
         self._coverage_key = None
 
     def set_text(self, text: str) -> None:
@@ -159,9 +166,10 @@ class TextReplacementPipeline:
         H_rect = quad_to_canvas(cw, ch, quad)
         H_back = canvas_to_quad(cw, ch, quad)
 
-        # 1. Rectification : la feuille « à plat ».
-        canvas = cv2.warpPerspective(frame, H_rect, (cw, ch), flags=cv2.INTER_LINEAR,
-                                     borderMode=cv2.BORDER_REPLICATE)
+        # 1. Rectification : la feuille « à plat » (GPU si disponible : c'est
+        # l'opération la plus lourde, sur l'image entière).
+        canvas = self.accel.warp_perspective(frame, H_rect, (cw, ch), cv2.INTER_LINEAR,
+                                             cv2.BORDER_REPLICATE)
 
         # 2. Effacement : on ne ramène dans l'image que l'extrait nettoyé.
         erased = self.eraser.erase(canvas)
@@ -210,16 +218,31 @@ class TextReplacementPipeline:
         ox, oy = self.text_offset
         warped = warp_canvas_patch(cov_patch, (cx0 + ox, cy0 + oy), H_back, frame.shape)
 
-        # 5. Intégration photométrique (fusion Produit, flou, grain).
+        # 5. Intégration photométrique (fusion Produit, flou, grain ISO).
+        noise_sigma = photometry.noise_sigma
         if warped is not None and cov_patch.size:
             cov_img, (x0, y0, x1, y1) = warped
+            if photometry.noise_auto:
+                # Bruit ISO calibré sur la vraie caméra : mesuré dans l'image
+                # *brute* sous le texte (le canevas, rééchantillonné, sous-estime
+                # le bruit), lissé dans le temps.
+                # Le niveau de bruit est stationnaire : une fenêtre centrale de
+                # 256 px au plus suffit (et coûte 5 à 10× moins en 1080p).
+                cy, cx = (y0 + y1) // 2, (x0 + x1) // 2
+                window = frame[max(y0, cy - 128):min(y1, cy + 128),
+                               max(x0, cx - 128):min(x1, cx + 128)]
+                measured = estimate_noise_sigma(window)
+                self._sensor_sigma = measured if self._sensor_sigma is None else (
+                    0.8 * self._sensor_sigma + 0.2 * measured)
+                noise_sigma = photometry.noise_gain * self._sensor_sigma
             out[y0:y1, x0:x1] = composite_ink(out[y0:y1, x0:x1], cov_img, factors,
-                                              photometry, self.noise)
+                                              photometry, self.noise, noise_sigma)
 
         self.debug = FrameDebug(
             paper_luminance=float(self._paper_bgr @ LUMA_BGR),
             paper_bgr=self._paper_bgr,
             ink_bgr=self._ink_bgr,
+            noise_sigma=float(noise_sigma),
             erased_pixels=int(np.count_nonzero(erased.text_mask)),
             canvas=canvas,
             erase=erased,

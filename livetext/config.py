@@ -16,6 +16,7 @@ WEIGHT = 0.0              # graisse en points : > 0 plus gras, < 0 plus maigre
 # Pas des réglages fins au clavier (fenêtre d'aperçu).
 NUDGE_STEP_PX = 0.5       # flèches : décalage du texte, en pixels écran
 FONT_STEP_PT = 1          # + / - : taille de police, en points
+TRACK_STEP_PT = 0.25     # [ / ] : interlettrage, en points
 
 # Résolutions supportées par le cahier des charges.
 RESOLUTIONS: dict[str, tuple[int, int]] = {
@@ -54,6 +55,8 @@ class TrackerConfig:
     smooth_min_cutoff: float = 0.5  # Hz à l'arrêt ; plus bas = plus lisse (0 = off)
     smooth_beta: float = 0.5        # hausse de la coupure avec la vitesse
     smooth_d_cutoff: float = 4.0    # Hz, lissage de la vitesse estimée
+    smoothing_mode: str = "oneeuro"  # "oneeuro" (adaptatif) ou "ema"
+    ema_alpha: float = 0.1          # α de la moyenne mobile (mode "ema")
 
 
 @dataclass
@@ -72,6 +75,7 @@ class EraseConfig:
     threshold_c: int = 12           # sensibilité du seuillage adaptatif
     stroke_dilate: int = 3          # dilatation du masque de texte (px)
     inpaint_radius: int = 5
+    inpaint_algo: str = "telea"     # "telea" ou "ns" (Navier-Stokes)
     feather: int = 7                # adoucissement des bords du masque (px)
     grain_strength: float = 1.0     # réinjection du grain du papier
     # Mémoire temporelle du masque (le canevas est recalé sur le papier, donc
@@ -111,7 +115,11 @@ class PhotometryConfig:
     ink_min: float = 18.0           # luminance minimale de l'encre (0-255)
     ink_tint: tuple[float, float, float] = (1.0, 1.0, 1.0)  # teinte BGR
     blur_sigma: float = 0.8         # flou gaussien de l'encre (défocalisation)
-    noise_sigma: float = 2.5        # bruit gaussien (grain capteur)
+    # Bruit ISO : calibré à chaque image sur le grain réel du papier
+    # (noise_auto) et mis à l'échelle par noise_gain ; sinon valeur fixe.
+    noise_auto: bool = True
+    noise_gain: float = 1.0
+    noise_sigma: float = 2.5        # repli fixe si noise_auto = False
     luminance_ring: int = 24        # marge de mesure autour du texte (px canevas)
 
 
@@ -131,6 +139,7 @@ class AppConfig:
     # (4 clics), ou "x1,y1,x2,y2,x3,y3,x4,y4" en pixels.
     init: str = "auto"
     canvas_max_side: int = 960
+    gpu: str = "auto"               # "auto" | "on" | "off" (accélération CUDA)
     show_debug: bool = False
     stdin_input: bool = True
 

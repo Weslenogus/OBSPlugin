@@ -145,3 +145,35 @@ def test_font_size_change_is_applied_live(scene):
     assert pipe.adjust_font_size(+3) == auto + 3
     pipe.process(frame, quad)
     assert pipe.renderer.last_size == auto + 3  # re-rendu sans relancer
+
+
+def _noisy(base, sigma, seed):
+    n = np.empty(base.shape, np.float32)
+    cv2.setRNGSeed(seed)
+    cv2.randn(n, (0, 0, 0), (sigma,) * 3)
+    return np.clip(base.astype(np.float32) + n, 0, 255).astype(np.uint8)
+
+
+def test_iso_grain_is_calibrated_on_the_camera_noise():
+    """Plus la caméra est bruitée, plus le grain ajouté sur l'encre l'est."""
+    base, quad, _ = make_scene()
+    measured = []
+    for sigma in (1.0, 4.0, 8.0):
+        pipe = _pipeline("Calibrage")
+        pipe.set_target(quad)
+        for k in range(8):
+            pipe.process(_noisy(base, sigma, k), quad)
+        measured.append(pipe.debug.noise_sigma)
+    assert measured[0] < measured[1] < measured[2]
+    # Bruit de luminance : ~0,67 × σ par canal (canaux indépendants).
+    assert measured[2] == pytest.approx(0.67 * 8.0, rel=0.2)
+
+
+def test_fixed_noise_when_calibration_is_off(scene):
+    frame, quad, _ = scene
+    pipe = _pipeline("Fixe")
+    pipe.config.photometry.noise_auto = False
+    pipe.config.photometry.noise_sigma = 3.5
+    pipe.set_target(quad)
+    pipe.process(frame, quad)
+    assert pipe.debug.noise_sigma == 3.5

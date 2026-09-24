@@ -19,7 +19,7 @@ import sys
 import threading
 from dataclasses import dataclass
 
-from .config import FONT_STEP_PT, NUDGE_STEP_PX
+from .config import FONT_STEP_PT, NUDGE_STEP_PX, TRACK_STEP_PT
 
 log = logging.getLogger(__name__)
 
@@ -42,7 +42,8 @@ Commandes (terminal) :
 Fenêtre d'aperçu : t ou Entrée = saisir, Échap = annuler, r = redétecter,
                    s = sélection manuelle, d = diagnostic, q = quitter,
                    flèches = décaler le texte d'un demi-pixel,
-                   + / - = taille de police, 0 = recentrer."""
+                   + / - = taille de police, [ / ] = interlettrage,
+                   0 = recentrer."""
 
 # Codes renvoyés par cv2.waitKeyEx selon les plateformes.
 _ENTER = {10, 13, 65421}
@@ -170,6 +171,10 @@ class TextController:
             return Command("fontsize", f"+{FONT_STEP_PT}")
         elif key in _MINUS:
             return Command("fontsize", f"-{FONT_STEP_PT}")
+        elif char == "[":
+            return Command("tracking_delta", f"-{TRACK_STEP_PT}")
+        elif char == "]":
+            return Command("tracking_delta", f"+{TRACK_STEP_PT}")
         elif char == "0":
             return Command("recenter")
         return None

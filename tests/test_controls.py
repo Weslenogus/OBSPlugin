@@ -135,3 +135,16 @@ def test_terminal_layout_commands():
         c.handle_line(line)
     assert c.pop_commands() == [Command("tracking", "1.5"), Command("weight", "-0.5"),
                                 Command("nudge", "0.5 -1"), Command("recenter")]
+
+
+@pytest.mark.parametrize("key,arg", [("[", "-0.25"), ("]", "+0.25")])
+def test_brackets_adjust_tracking(key, arg):
+    assert TextController("").handle_key(ord(key)) == Command("tracking_delta", arg)
+
+
+def test_brackets_are_typed_while_editing():
+    c = TextController("")
+    c.handle_key(ord("t"))
+    for ch in "[]":
+        assert c.handle_key(ord(ch)) is None
+    assert c.buffer == "[]"
