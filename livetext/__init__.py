@@ -16,6 +16,32 @@ aussi par ``python -m livetext`` et par ``main.py``).
 
 from __future__ import annotations
 
+import os
+import sys
+
+
+def _register_cuda_dlls() -> None:
+    """Windows : rend les DLL CUDA (NPP…) visibles *avant* tout ``import cv2``.
+
+    Depuis Python 3.8, Windows ne cherche plus les dépendances des modules
+    compilés dans le PATH : un OpenCV compilé avec CUDA échouerait à l'import
+    (« DLL load failed ») sans cette déclaration. CUDA 13 range ses DLL dans
+    ``bin\\x64`` : on déclare les deux emplacements.
+    """
+    cuda = os.environ.get("CUDA_PATH")
+    if sys.platform != "win32" or not cuda or not hasattr(os, "add_dll_directory"):
+        return
+    for sub in ("bin", os.path.join("bin", "x64")):
+        folder = os.path.join(cuda, sub)
+        if os.path.isdir(folder):
+            try:
+                os.add_dll_directory(folder)
+            except OSError:
+                pass
+
+
+_register_cuda_dlls()
+
 __all__ = [
     "__version__",
     "AppConfig",

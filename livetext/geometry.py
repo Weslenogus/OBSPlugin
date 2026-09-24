@@ -126,7 +126,31 @@ def transform_quad(quad: Quad, H: np.ndarray) -> Quad:
     return pts.reshape(4, 2).astype(np.float32)
 
 
-def warp_canvas_patch(patch: np.ndarray, origin: tuple[int, int],
+def patch_roi(patch_shape: tuple[int, ...], origin: tuple[float, float],
+              H_canvas_to_frame: np.ndarray, frame_shape: tuple[int, ...]
+              ) -> tuple[int, int, int, int] | None:
+    """Rectangle image (x0, y0, x1, y1) couvert par un extrait du canevas.
+
+    ``origin`` est le coin haut-gauche de l'extrait dans le canevas (réel :
+    décalage sous-pixel possible). ``None`` si l'extrait sort de l'image.
+    """
+    ox, oy = origin
+    ph, pw = patch_shape[:2]
+    corners = np.array([[ox, oy], [ox + pw, oy], [ox + pw, oy + ph], [ox, oy + ph]],
+                       dtype=np.float32)
+    return quad_roi(transform_quad(corners, H_canvas_to_frame), frame_shape, pad=2)
+
+
+def patch_homography(H_canvas_to_frame: np.ndarray, origin: tuple[float, float],
+                     roi: tuple[int, int, int, int]) -> np.ndarray:
+    """Homographie extrait → rectangle ``roi`` (pour ``warpPerspective``)."""
+    x0, y0 = roi[:2]
+    ox, oy = origin
+    return translate_homography(H_canvas_to_frame, -x0, -y0) @ np.array(
+        [[1, 0, ox], [0, 1, oy], [0, 0, 1]], dtype=np.float64)
+
+
+def warp_canvas_patch(patch: np.ndarray, origin: tuple[float, float],
                       H_canvas_to_frame: np.ndarray, frame_shape: tuple[int, ...],
                       border: int = cv2.BORDER_CONSTANT
                       ) -> tuple[np.ndarray, tuple[int, int, int, int]] | None:
@@ -138,16 +162,11 @@ def warp_canvas_patch(patch: np.ndarray, origin: tuple[int, int],
     le coût devient proportionnel à la surface du texte, pas à celle de la
     feuille. Renvoie ``(patch_déformé, (x0, y0, x1, y1))`` ou ``None``.
     """
-    ox, oy = origin
-    ph, pw = patch.shape[:2]
-    corners = np.array([[ox, oy], [ox + pw, oy], [ox + pw, oy + ph], [ox, oy + ph]],
-                       dtype=np.float32)
-    roi = quad_roi(transform_quad(corners, H_canvas_to_frame), frame_shape, pad=2)
+    roi = patch_roi(patch.shape, origin, H_canvas_to_frame, frame_shape)
     if roi is None:
         return None
     x0, y0, x1, y1 = roi
-    H = translate_homography(H_canvas_to_frame, -x0, -y0) @ np.array(
-        [[1, 0, ox], [0, 1, oy], [0, 0, 1]], dtype=np.float64)
-    warped = cv2.warpPerspective(patch, H, (x1 - x0, y1 - y0), flags=cv2.INTER_LINEAR,
+    warped = cv2.warpPerspective(patch, patch_homography(H_canvas_to_frame, origin, roi),
+                                 (x1 - x0, y1 - y0), flags=cv2.INTER_LINEAR,
                                  borderMode=border, borderValue=0)
     return warped, roi

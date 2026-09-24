@@ -39,14 +39,68 @@ caméra virtuelle (« OBS Virtual Camera » ou « livetext » sous Linux).
   puis indiquez son index avec `--source`. La cadence réelle annoncée par la
   caméra (24 ou 30 i/s) est reprise automatiquement par le filtre
   anti-tremblement et par la caméra virtuelle.
-- **GPU Nvidia RTX** (`--gpu auto`, défaut) : la rectification de l'image
-  entière, l'opération la plus lourde, passe par `cv2.cuda` **si OpenCV a été
-  compilé avec CUDA**. Le paquet pip `opencv-python` ne l'est pas : il faut
-  une version d'OpenCV compilée avec CUDA. Le GPU n'est activé qu'après un
-  auto-test (résultat GPU comparé au CPU) et toute erreur repasse sur le CPU
-  sans couper le direct ; `--debug` affiche `GPU` ou `CPU`. Les petits
-  extraits (glyphes) restent sur le CPU, où le transfert vers le GPU coûterait
-  plus qu'il ne rapporte. **Non testé sur GPU réel** : mesurez avec `--debug`.
+- **GPU Nvidia RTX** (`--gpu auto`, défaut) : voir la section suivante.
+
+### Accélération GPU (CUDA)
+
+**Route retenue : recompiler OpenCV avec CUDA**, à partir des sources
+officielles `opencv-contrib-python` de PyPI, en une vraie *wheel* pip.
+
+| Option | Verdict |
+|---|---|
+| Conda | **Inexistante** : aucune des 6 467 versions de `libopencv` sur conda-forge (jusqu'à OpenCV 5.0) n'est compilée avec CUDA. |
+| Kornia / PyTorch | Installation facile, mais ~2,5 Go de dépendances pour **le même gain** : les étapes coûteuses sans équivalent CUDA le restent aussi avec Kornia. |
+| **Recompiler OpenCV** | Une seule bibliothèque, pas de dépendance géante. La compilation passe par le système de build officiel (paramètres `CMAKE_ARGS`) : on obtient une wheel propre, qui remplace proprement l'OpenCV pip. |
+
+**Gain attendu, mesuré** : en 1080p, **~20 % du temps d'une image** se porte
+sur GPU (rectification, déformation des calques, effacement, fusion Produit,
+grain). Les étapes les plus lourdes n'ont pas d'équivalent CUDA dans OpenCV
+et restent sur CPU : `cv2.inpaint` (4,6 ms), la détection du texte (3,5 ms)
+et le suivi LK. Attendez-vous à quelques millisecondes de marge, pas à un
+facteur 2.
+
+Pour que le GPU gagne quelque chose, l'image 1080p n'est **envoyée qu'une
+fois** : un envoi coûte autant que la déformation CPU qu'il remplace, donc
+seule une chaîne entière sur GPU est rentable. Le GPU n'est activé qu'après
+un **auto-test** (chaîne GPU comparée à la chaîne CPU), et toute erreur en
+direct fait recalculer l'image sur CPU puis désactive le GPU, sans couper le
+flux.
+
+**Compilation** (20 à 90 min ; le script choisit l'architecture de votre GPU
+avec `nvidia-smi`, installe la wheel et la vérifie) :
+
+```bash
+# Linux — CUDA 12.9 (dépôt NVIDIA) : cuda-nvcc-12-9 cuda-cudart-dev-12-9 libnpp-dev-12-9
+#          + libgtk-3-dev pour la fenêtre d'aperçu
+scripts/build_opencv_cuda.sh
+```
+
+```powershell
+# Windows — Visual Studio 2022 Build Tools (C++), puis CUDA Toolkit 12.9 (après VS)
+powershell -ExecutionPolicy Bypass -File scripts\build_opencv_cuda.ps1
+```
+
+Puis le diagnostic, qui indique si le GPU est actif et compare les temps
+CPU et GPU en 1080p :
+
+```bash
+python -m livetext.accel
+```
+
+Remarques :
+- **CUDA 12.x plutôt que 13.x** : 12.x fonctionne avec tout pilote ≥ 525,
+  13.x exige un pilote ≥ 580. La 12.8 et suivantes gèrent les RTX 20 à 50.
+- **Windows** : les DLL CUDA sont déclarées automatiquement
+  (`os.add_dll_directory`) ; sans cela, `import cv2` échouerait avec « DLL
+  load failed ».
+- **Ce qui a été vérifié** : la chaîne GPU est testée contre un `cv2.cuda`
+  simulé et strict (mêmes contraintes que le vrai), et la configuration CMake
+  du script Linux détecte bien CUDA (OpenCV 5.0.0 + CUDA 12.9, conteneur sans
+  GPU : compiler n'exige que `nvcc`). Le script Windows suit la même recette
+  mais n'a pas pu être exécuté. L'exécution sur un vrai GPU n'a pas pu être
+  testée : lancez `python -m livetext.accel`.
+- Les indications de typage (`.pyi`) d'OpenCV ne sont pas générées avec ce jeu
+  réduit de modules : aucun effet à l'exécution.
 
 ## Police
 

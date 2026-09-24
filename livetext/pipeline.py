@@ -25,21 +25,20 @@ import numpy as np
 from .compositor import (
     LUMA_BGR,
     NoiseBank,
-    composite_ink,
     estimate_noise_sigma,
     ink_multiply_factors,
     measure_ink_color,
     measure_paper_color,
 )
-from .accel import Accelerator
+from .accel import Accelerator, CpuFrame
 from .config import AppConfig
 from .geometry import (
     Quad,
     canvas_size_for_quad,
     canvas_to_quad,
     quad_size,
+    patch_roi,
     quad_to_canvas,
-    warp_canvas_patch,
 )
 from .inpaint import EraseResult, TextEraser
 from .textrender import TextRenderer
@@ -71,7 +70,7 @@ class TextReplacementPipeline:
     def __init__(self, config: AppConfig, seed: int | None = None,
                  accel: Accelerator | None = None):
         self.config = config
-        self.accel = accel or Accelerator(config.gpu)
+        self.accel = accel or Accelerator(config.gpu, seed=seed)
         self.noise = NoiseBank(seed)
         self.eraser = TextEraser(config.erase, self.noise)
         self.renderer = TextRenderer(config.text)
@@ -161,27 +160,27 @@ class TextReplacementPipeline:
         """Renvoie une copie de ``frame`` avec le texte remplacé."""
         if quad is None or self.canvas_size is None:
             return frame
+        if self.accel.enabled:
+            try:
+                return self._process(frame, quad, self.accel.frame(frame, self.noise))
+            except Exception as exc:  # noqa: BLE001 - erreur GPU : image refaite sur CPU
+                self.accel.disable(f"erreur GPU ({type(exc).__name__}: {exc})")
+        return self._process(frame, quad, CpuFrame(frame, self.noise))
 
+    def _process(self, frame: np.ndarray, quad: Quad, session) -> np.ndarray:
+        """Chaîne complète sur une session (``CpuFrame`` ou ``GpuFrame``)."""
         cw, ch = self.canvas_size
         H_rect = quad_to_canvas(cw, ch, quad)
         H_back = canvas_to_quad(cw, ch, quad)
 
-        # 1. Rectification : la feuille « à plat » (GPU si disponible : c'est
-        # l'opération la plus lourde, sur l'image entière).
-        canvas = self.accel.warp_perspective(frame, H_rect, (cw, ch), cv2.INTER_LINEAR,
-                                             cv2.BORDER_REPLICATE)
+        # 1. Rectification : la feuille « à plat » (image entière).
+        canvas = session.warp(H_rect, (cw, ch), cv2.INTER_LINEAR, cv2.BORDER_REPLICATE)
 
-        # 2. Effacement : on ne ramène dans l'image que l'extrait nettoyé.
+        # 2. Effacement (détection et reconstruction sur CPU, dans le canevas),
+        # puis retour dans l'image du seul extrait nettoyé.
         erased = self.eraser.erase(canvas)
-        out = frame.copy()
-        if not erased.empty:
-            clean = warp_canvas_patch(erased.clean, erased.origin, H_back, frame.shape,
-                                      border=cv2.BORDER_REPLICATE)
-            soft = warp_canvas_patch(erased.soft_mask, erased.origin, H_back, frame.shape)
-            if clean is not None and soft is not None:
-                (clean_img, (x0, y0, x1, y1)), (m, _) = clean, soft
-                out[y0:y1, x0:x1] = cv2.blendLinear(out[y0:y1, x0:x1], clean_img,
-                                                    1.0 - m, m)
+        erase_layer = (None if erased.empty else
+                       (erased.clean, erased.soft_mask, erased.origin))
 
         # 3. Nouveau texte ; couleurs réelles du papier et de l'encre autour.
         cov, box = self.coverage()
@@ -213,15 +212,16 @@ class TextReplacementPipeline:
         if shrink > 1.5:
             cov_patch = cv2.GaussianBlur(cov_patch, (0, 0), 0.4 * shrink)
 
-        # 4. Déformation géométrique du calque de texte sur la feuille ; le
-        # décalage fin est une origine *réelle* : précision sous-pixel.
+        # 4-5. Déformation du calque de texte sur la feuille (le décalage fin est
+        # une origine *réelle* : précision sous-pixel) et intégration
+        # photométrique (fusion Produit, flou, grain ISO).
         ox, oy = self.text_offset
-        warped = warp_canvas_patch(cov_patch, (cx0 + ox, cy0 + oy), H_back, frame.shape)
-
-        # 5. Intégration photométrique (fusion Produit, flou, grain ISO).
+        origin = (cx0 + ox, cy0 + oy)
         noise_sigma = photometry.noise_sigma
-        if warped is not None and cov_patch.size:
-            cov_img, (x0, y0, x1, y1) = warped
+        roi = patch_roi(cov_patch.shape, origin, H_back, frame.shape) if cov_patch.size else None
+        ink_layer = (cov_patch, origin) if roi is not None else None
+        if roi is not None:
+            x0, y0, x1, y1 = roi
             if photometry.noise_auto:
                 # Bruit ISO calibré sur la vraie caméra : mesuré dans l'image
                 # *brute* sous le texte (le canevas, rééchantillonné, sous-estime
@@ -235,8 +235,8 @@ class TextReplacementPipeline:
                 self._sensor_sigma = measured if self._sensor_sigma is None else (
                     0.8 * self._sensor_sigma + 0.2 * measured)
                 noise_sigma = photometry.noise_gain * self._sensor_sigma
-            out[y0:y1, x0:x1] = composite_ink(out[y0:y1, x0:x1], cov_img, factors,
-                                              photometry, self.noise, noise_sigma)
+        out = session.compose(H_back, erase_layer, ink_layer, factors, photometry,
+                              noise_sigma)
 
         self.debug = FrameDebug(
             paper_luminance=float(self._paper_bgr @ LUMA_BGR),
