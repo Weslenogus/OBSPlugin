@@ -1,0 +1,6 @@
+numpy>=1.24
+# Version avec interface graphique (fenêtre d'aperçu, clavier, souris).
+# Sur une machine sans écran, opencv-python-headless suffit (sans « window »).
+opencv-python>=4.8
+Pillow>=10.0
+pyvirtualcam>=0.11
