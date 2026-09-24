@@ -68,9 +68,11 @@ Say "Compilation (longue : 30 à 90 min selon la machine)"
 # OpenCV 5 a renommé des modules (features2d -> features, calib3d éclaté en
 # geometry/calib...). CMake IGNORE SANS ERREUR un nom inconnu : on liste les
 # noms 4.x ET 5.x, sinon ORB / findHomography manqueraient en silence.
-$modules = "core,imgproc,imgcodecs,videoio,highgui,video,photo,flann,python3," +
-           "features2d,calib3d," +      # noms OpenCV 4.x
-           "features,geometry," +       # noms OpenCV 5.x
+# objdetect/calib/stereo : exigés par le générateur des annotations Python
+# (sinon pas de py.typed et l'empaquetage échoue après la compilation).
+$modules = "core,imgproc,imgcodecs,videoio,highgui,video,photo,flann,objdetect,python3," +
+           "features2d,calib3d," +                 # noms OpenCV 4.x
+           "features,geometry,calib,stereo," +     # noms OpenCV 5.x
            "cudev,cudaarithm,cudawarping,cudaimgproc,cudafilters"
 $cudaRoot = $env:CUDA_PATH -replace '\\', '/'
 $env:CMAKE_ARGS = "-DWITH_CUDA=ON -DCUDA_TOOLKIT_ROOT_DIR=`"$cudaRoot`" " +

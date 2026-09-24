@@ -67,6 +67,9 @@ class GpuMat:
 
 
 def _check_same(*mats):
+    for m in mats:
+        if not isinstance(m, GpuMat):   # comme le vrai : aucune surcharge ne correspond
+            raise cv2.error(f"Overload resolution failed: {type(m).__name__} n'est pas un GpuMat")
     kinds = {(_kind(m._a), m._a.shape[:2]) for m in mats}
     assert len(kinds) == 1, f"CUDA : types/tailles différents {kinds}"
 
@@ -90,10 +93,15 @@ def addWeighted(src1, alpha, src2, beta, gamma):
     return GpuMat._wrap(cv2.addWeighted(src1._a, alpha, src2._a, beta, gamma))
 
 
-def merge(mats):
+def merge(mats, dst=None):
+    """Piège réel des liaisons Python : les 3 surcharges de ``cv2.cuda.merge``
+    ne diffèrent que par ``dst``. Sans ``dst``, la *première* (sortie
+    ``MatLike``) l'emporte : le résultat revient en **tableau numpy** sur le
+    CPU. Il faut passer ``dst=cv2.cuda_GpuMat()`` pour rester sur le GPU."""
     _check_same(*mats)
     assert _kind(mats[0]._a)[1] == 1
-    return GpuMat._wrap(cv2.merge([m._a for m in mats]))
+    merged = cv2.merge([m._a for m in mats])
+    return merged if dst is None else GpuMat._wrap(merged)
 
 
 def multiply(src1, src2, scale=1.0):

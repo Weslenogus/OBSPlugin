@@ -19,6 +19,9 @@ REQUIRED = {
     "python3",
     "features2d", "calib3d",      # OpenCV 4.x : ORB, findHomography
     "features", "geometry",       # OpenCV 5.x : mêmes fonctions, modules renommés
+    # Exigés par le générateur d'annotations Python d'OpenCV (py.typed) :
+    # sans eux, l'empaquetage échoue après une compilation complète.
+    "objdetect", "calib", "stereo",
     "cudev", "cudaarithm", "cudawarping", "cudaimgproc", "cudafilters",
 }
 

@@ -139,13 +139,17 @@ class GpuFrame:
             if cfg.blur_sigma > 0:
                 g_cov = self.accel.gaussian(cfg.blur_sigma).apply(g_cov)
             # Calque Produit par canal : 1 - cov·(1 - f) = cov·(f - 1) + 1.
+            # ``dst`` explicite : sans lui, la première surcharge de merge()
+            # renvoie un tableau numpy (téléchargé sur le CPU) — piège des
+            # liaisons Python, vérifié sur les signatures réelles.
             layer = cv2.cuda.merge([cv2.cuda.addWeighted(g_cov, float(f) - 1.0, g_cov, 0.0, 1.0)
-                                    for f in factors])
+                                    for f in factors], cv2.cuda_GpuMat())
             result = cv2.cuda.multiply(base.convertTo(cv2.CV_32FC3), layer)
             if noise_sigma > 0:
                 grain = cv2.cuda.multiply(self.accel.noise(y1 - y0, x1 - x0), g_cov,
                                           scale=float(noise_sigma))
-                result = cv2.cuda.add(result, cv2.cuda.merge([grain, grain, grain]))
+                result = cv2.cuda.add(result, cv2.cuda.merge([grain, grain, grain],
+                                                             cv2.cuda_GpuMat()))
             base = result.convertTo(cv2.CV_8UC3)   # arrondi + saturation 0-255
 
         out[y0:y1, x0:x1] = base.download()
